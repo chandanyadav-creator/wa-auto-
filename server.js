@@ -8,47 +8,109 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN;
 
-// 🧠 Normalize
+/* ================================
+   🧠 Utility Functions
+================================ */
+
+// Normalize text
 function normalize(text) {
     return (text || "").toLowerCase().trim();
 }
 
-// 🎯 Lead filter
+// Lead filter
 function isValidLead(message) {
-    const msg = normalize(message);
-    return msg.includes("hello sunfox");
+    return normalize(message).includes("hello sunfox");
 }
 
-// 🪵 Debug Logger
+// Format phone to +91
+function formatPhone(phone) {
+    if (!phone) return "";
+
+    const clean = phone.replace(/\D/g, "");
+
+    if (clean.length === 10) return `+91${clean}`;
+    if (clean.length === 12 && clean.startsWith("91")) return `+${clean}`;
+    if (phone.startsWith("+")) return phone;
+
+    return `+${clean}`;
+}
+
+// Generate all phone variants
+function generatePhoneVariants(phone) {
+    const clean = phone.replace(/\D/g, "");
+    const variants = new Set();
+
+    if (clean.length === 10) {
+        variants.add(`+91${clean}`);
+        variants.add(`91${clean}`);
+        variants.add(clean);
+    }
+
+    if (clean.length === 12 && clean.startsWith("91")) {
+        const num = clean.slice(2);
+        variants.add(`+91${num}`);
+        variants.add(clean);
+        variants.add(num);
+    }
+
+    return Array.from(variants);
+}
+
+// Extract message from MSG91 JSON
+function extractMessage(msg) {
+    try {
+        const parsed = JSON.parse(msg);
+        return parsed[0]?.text?.body || "";
+    } catch {
+        return msg;
+    }
+}
+
+// Logger
 function log(title, data) {
     console.log(`\n🔹 ${title}`);
     console.log(JSON.stringify(data, null, 2));
 }
 
-// 🔍 Find contact
+/* ================================
+   🔍 HubSpot Functions
+================================ */
+
+// Search contact (multi-format)
 async function findContact(phone) {
     try {
-        const res = await axios.post(
-            'https://api.hubapi.com/crm/v3/objects/contacts/search',
-            {
-                filterGroups: [{
-                    filters: [{
-                        propertyName: "phone",
-                        operator: "EQ",
-                        value: phone
-                    }]
-                }]
-            },
-            {
-                headers: {
-                    Authorization: `Bearer ${HUBSPOT_TOKEN}`,
-                    'Content-Type': 'application/json'
-                }
-            }
-        );
+        const variants = generatePhoneVariants(phone);
 
-        log("HubSpot Search Response", res.data);
-        return res.data.results[0];
+        console.log("📞 Searching variants:", variants);
+
+        for (const variant of variants) {
+            const res = await axios.post(
+                'https://api.hubapi.com/crm/v3/objects/contacts/search',
+                {
+                    filterGroups: [{
+                        filters: [{
+                            propertyName: "phone",
+                            operator: "EQ",
+                            value: variant
+                        }]
+                    }]
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${HUBSPOT_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
+
+            if (res.data.results.length > 0) {
+                console.log("✅ Match found with:", variant);
+                return res.data.results[0];
+            }
+        }
+
+        console.log("❌ No contact found");
+        return null;
 
     } catch (err) {
         console.error("❌ Search Error:", err.response?.data || err.message);
@@ -56,7 +118,7 @@ async function findContact(phone) {
     }
 }
 
-// ➕ Create
+// Create contact
 async function createContact(properties) {
     try {
         const res = await axios.post(
@@ -77,7 +139,7 @@ async function createContact(properties) {
     }
 }
 
-// 🔄 Update
+// Update contact
 async function updateContact(id, properties) {
     try {
         const res = await axios.patch(
@@ -98,13 +160,17 @@ async function updateContact(id, properties) {
     }
 }
 
-// 🏥 Health
+/* ================================
+   🌐 Routes
+================================ */
+
+// Health check
 app.get('/', (req, res) => {
     console.log("✅ Health check hit");
     res.send("Server Running ✅");
 });
 
-// 🌐 Webhook
+// Webhook
 app.post('/webhook/msg91', async (req, res) => {
     try {
         log("📩 RAW WEBHOOK BODY", req.body);
@@ -112,12 +178,15 @@ app.post('/webhook/msg91', async (req, res) => {
         const data = req.body;
 
         const name = data.customerName || "Unknown";
-        const phone = data.customerNumber;
-        const message = data.messages || data.text || "";
+        const rawPhone = data.customerNumber;
+        const phone = formatPhone(rawPhone);
+
+        const rawMessage = data.messages || data.text || "";
+        const message = extractMessage(rawMessage);
 
         log("📊 Parsed Data", { name, phone, message });
 
-        // ❌ Ignore
+        // Ignore if not valid lead
         if (!isValidLead(message)) {
             console.log("⛔ Ignored: message not matched");
             return res.status(200).send("Ignored");
@@ -132,10 +201,11 @@ app.post('/webhook/msg91', async (req, res) => {
 
         log("📦 HubSpot Payload", properties);
 
+        // Search + deduplicate
         const existing = await findContact(phone);
 
         if (existing) {
-            console.log("🔄 Existing contact found:", existing.id);
+            console.log("🔄 Updating existing contact:", existing.id);
             await updateContact(existing.id, properties);
         } else {
             console.log("🆕 Creating new contact");
@@ -152,7 +222,10 @@ app.post('/webhook/msg91', async (req, res) => {
     }
 });
 
-// 🚀 Start
+/* ================================
+   🚀 Start Server
+================================ */
+
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
 });
