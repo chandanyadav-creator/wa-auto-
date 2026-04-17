@@ -8,6 +8,9 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN;
 
+// 🎯 Target Integrated Number
+const TARGET_NUMBER = "917088000907";
+
 /* ================================
    🧠 Utility Functions
 ================================ */
@@ -15,11 +18,6 @@ const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN;
 // Normalize text
 function normalize(text) {
     return (text || "").toLowerCase().trim();
-}
-
-// Lead filter
-function isValidLead(message) {
-    return normalize(message).includes("hello sunfox");
 }
 
 // Format phone to +91
@@ -184,11 +182,13 @@ app.post('/webhook/msg91', async (req, res) => {
         const rawMessage = data.messages || data.text || "";
         const message = extractMessage(rawMessage);
 
-        log("📊 Parsed Data", { name, phone, message });
+        const integratedNumber = data.integratedNumber;
 
-        // Ignore if not valid lead
-        if (!isValidLead(message)) {
-            console.log("⛔ Ignored: message not matched");
+        log("📊 Parsed Data", { name, phone, message, integratedNumber });
+
+        // 🎯 FILTER BY INTEGRATED NUMBER ONLY
+        if (integratedNumber !== TARGET_NUMBER) {
+            console.log("⛔ Ignored: wrong integrated number");
             return res.status(200).send("Ignored");
         }
 
