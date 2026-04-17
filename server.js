@@ -196,7 +196,7 @@ app.post('/webhook/msg91', async (req, res) => {
             firstname: name,
             phone: phone,
             email: `${phone}@noemail.com`,
-            wa_creative: "WhatsApp Ads"
+            wa_creative: "whatsapp_ads"
         };
 
         log("📦 HubSpot Payload", properties);
