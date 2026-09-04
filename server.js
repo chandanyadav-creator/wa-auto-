@@ -196,7 +196,7 @@ app.post('/webhook/msg91', async (req, res) => {
             firstname: name,
             phone: phone,
             email: `${phone}@noemail.com`,
-            wa_creative: "Whatsapp_Campaign_100426"
+            wa_creative: "Cold_data"
         };
 
         log("📦 HubSpot Payload", properties);
