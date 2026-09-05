@@ -190,7 +190,7 @@ async function findContact(phone) {
                         "phone",
                         "email",
                         "wa_creative",
-                        "date_whatapps",
+                        "date_whatsapp",
                         "profession_category"
                     ],
                     limit: 1
