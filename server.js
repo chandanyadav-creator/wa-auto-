@@ -4,6 +4,7 @@ const express = require("express");
 const axios = require("axios");
 
 const app = express();
+
 app.use(express.json({ limit: "1mb" }));
 
 const PORT = process.env.PORT || 3000;
@@ -12,10 +13,12 @@ const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN;
 // 🎯 Target MSG91 Integrated Number
 const TARGET_NUMBER = "917088000907";
 
-// HubSpot API
 const HUBSPOT_BASE_URL = "https://api.hubapi.com";
 
-// Axios instance
+/* =========================================================
+   🔐 HUBSPOT AXIOS INSTANCE
+========================================================= */
+
 const hubspot = axios.create({
     baseURL: HUBSPOT_BASE_URL,
     timeout: 15000,
@@ -25,11 +28,12 @@ const hubspot = axios.create({
     }
 });
 
+
 /* =========================================================
    🧠 UTILITY FUNCTIONS
 ========================================================= */
 
-// 🇮🇳 Current date according to India
+// 🇮🇳 Current date in India
 function getCurrentDateIndia() {
     return new Intl.DateTimeFormat("en-CA", {
         timeZone: "Asia/Kolkata",
@@ -54,12 +58,12 @@ function formatPhone(phone) {
         return `+91${clean}`;
     }
 
-    // 12 digit Indian number starting with 91
+    // 12 digit number starting with 91
     if (clean.length === 12 && clean.startsWith("91")) {
         return `+${clean}`;
     }
 
-    // Already +91
+    // Other formats
     if (original.startsWith("+")) {
         return `+${clean}`;
     }
@@ -76,14 +80,14 @@ function generatePhoneVariants(phone) {
 
     const variants = new Set();
 
-    // 10 digit
+    // 10 digit number
     if (clean.length === 10) {
         variants.add(clean);
         variants.add(`91${clean}`);
         variants.add(`+91${clean}`);
     }
 
-    // 12 digit starting 91
+    // 12 digit number starting with 91
     else if (clean.length === 12 && clean.startsWith("91")) {
         const number = clean.substring(2);
 
@@ -92,7 +96,7 @@ function generatePhoneVariants(phone) {
         variants.add(`+${clean}`);
     }
 
-    // Generic fallback
+    // Fallback
     else {
         variants.add(clean);
         variants.add(`+${clean}`);
@@ -104,10 +108,14 @@ function generatePhoneVariants(phone) {
 
 // 📩 Extract message from MSG91 payload
 function extractMessage(messageData) {
-    if (!messageData) return "";
 
-    // Already object
+    if (!messageData) {
+        return "";
+    }
+
+    // If already object
     if (typeof messageData === "object") {
+
         if (Array.isArray(messageData)) {
             return messageData[0]?.text?.body || "";
         }
@@ -119,8 +127,9 @@ function extractMessage(messageData) {
         );
     }
 
-    // String JSON
+    // If JSON string
     try {
+
         const parsed = JSON.parse(messageData);
 
         if (Array.isArray(parsed)) {
@@ -134,6 +143,7 @@ function extractMessage(messageData) {
         );
 
     } catch {
+
         return String(messageData);
     }
 }
@@ -141,31 +151,43 @@ function extractMessage(messageData) {
 
 // 📝 Logger
 function log(title, data) {
+
     console.log(`\n🔹 ${title}`);
 
     try {
+
         console.log(
             JSON.stringify(data, null, 2)
         );
+
     } catch {
+
         console.log(data);
     }
 }
 
 
 /* =========================================================
-   🔍 HUBSPOT - FIND CONTACT
+   🔍 FIND CONTACT IN HUBSPOT
 ========================================================= */
 
 async function findContact(phone) {
+
     const variants = generatePhoneVariants(phone);
 
     if (!variants.length) {
-        console.log("❌ No valid phone variants");
+
+        console.log(
+            "❌ No valid phone variants"
+        );
+
         return null;
     }
 
-    console.log("📞 Searching HubSpot phone variants:", variants);
+    console.log(
+        "📞 Searching phone variants:",
+        variants
+    );
 
     for (const variant of variants) {
 
@@ -185,24 +207,17 @@ async function findContact(phone) {
                             ]
                         }
                     ],
-                    properties: [
-                        "firstname",
-                        "phone",
-                        "email",
-                        "wa_creative",
-                        "date_whatsapp",
-                        "profession_category"
-                    ],
                     limit: 1
                 }
             );
 
-            const results = response.data?.results || [];
+            const results =
+                response.data?.results || [];
 
             if (results.length > 0) {
 
                 console.log(
-                    `✅ Existing contact found using ${variant}`
+                    `✅ Contact found using phone: ${variant}`
                 );
 
                 return results[0];
@@ -211,22 +226,25 @@ async function findContact(phone) {
         } catch (error) {
 
             console.error(
-                `❌ HubSpot search failed for ${variant}:`,
-                error.response?.data || error.message
+                `❌ Search error for ${variant}:`,
+                error.response?.data ||
+                error.message
             );
 
-            // Continue checking next phone variant
+            // Continue with next variant
         }
     }
 
-    console.log("❌ No existing contact found");
+    console.log(
+        "❌ No existing contact found"
+    );
 
     return null;
 }
 
 
 /* =========================================================
-   🆕 HUBSPOT - CREATE CONTACT
+   🆕 CREATE CONTACT
 ========================================================= */
 
 async function createContact(properties) {
@@ -241,7 +259,7 @@ async function createContact(properties) {
         );
 
         console.log(
-            "✅ New HubSpot contact created:",
+            "✅ Contact Created:",
             response.data.id
         );
 
@@ -250,8 +268,9 @@ async function createContact(properties) {
     } catch (error) {
 
         console.error(
-            "❌ HubSpot create error:",
-            error.response?.data || error.message
+            "❌ Contact Create Error:",
+            error.response?.data ||
+            error.message
         );
 
         return null;
@@ -260,10 +279,13 @@ async function createContact(properties) {
 
 
 /* =========================================================
-   🔄 HUBSPOT - UPDATE CONTACT
+   🔄 UPDATE CONTACT
 ========================================================= */
 
-async function updateContact(contactId, properties) {
+async function updateContact(
+    contactId,
+    properties
+) {
 
     try {
 
@@ -275,7 +297,7 @@ async function updateContact(contactId, properties) {
         );
 
         console.log(
-            "✅ HubSpot contact updated:",
+            "✅ Contact Updated:",
             contactId
         );
 
@@ -284,8 +306,9 @@ async function updateContact(contactId, properties) {
     } catch (error) {
 
         console.error(
-            "❌ HubSpot update error:",
-            error.response?.data || error.message
+            "❌ Contact Update Error:",
+            error.response?.data ||
+            error.message
         );
 
         return null;
@@ -309,246 +332,304 @@ app.get("/", (req, res) => {
    📩 MSG91 WEBHOOK
 ========================================================= */
 
-app.post("/webhook/msg91", async (req, res) => {
+app.post(
+    "/webhook/msg91",
+    async (req, res) => {
 
-    try {
+        try {
 
-        const data = req.body || {};
+            const data = req.body || {};
 
-        // Log raw webhook
-        log("📩 RAW MSG91 WEBHOOK", data);
+            /* =================================================
+               RAW WEBHOOK
+            ================================================= */
 
-
-        /* =====================================================
-           Extract webhook fields
-        ===================================================== */
-
-        const name =
-            String(data.customerName || "Unknown").trim();
-
-        const rawPhone =
-            data.customerNumber || "";
-
-        const phone =
-            formatPhone(rawPhone);
-
-        const integratedNumber =
-            String(data.integratedNumber || "").trim();
-
-        const templateName =
-            String(data.templateName || "").trim();
-
-        const rawMessage =
-            data.messages ||
-            data.text ||
-            "";
-
-        const message =
-            extractMessage(rawMessage);
-
-
-        /* =====================================================
-           Parsed Data
-        ===================================================== */
-
-        log("📊 PARSED WEBHOOK DATA", {
-            name,
-            rawPhone,
-            phone,
-            integratedNumber,
-            templateName,
-            message
-        });
-
-
-        /* =====================================================
-           🎯 FILTER 1
-           Integrated Number
-        ===================================================== */
-
-        if (integratedNumber !== TARGET_NUMBER) {
-
-            console.log(
-                `⛔ Ignored: Wrong integrated number (${integratedNumber})`
+            log(
+                "📩 RAW MSG91 WEBHOOK",
+                data
             );
 
-            return res
-                .status(200)
-                .send("Ignored - Wrong Integrated Number");
-        }
+
+            /* =================================================
+               EXTRACT DATA
+            ================================================= */
+
+            const name =
+                String(
+                    data.customerName ||
+                    "Unknown"
+                ).trim();
 
 
-        /* =====================================================
-           🎯 FILTER 2
-           Template Name
-           
-           IMPORTANT:
-           Template name can be ANY value.
-           But it MUST exist.
-        ===================================================== */
-
-        if (!templateName) {
-
-            console.log(
-                "⛔ Ignored: templateName missing or empty"
-            );
-
-            return res
-                .status(200)
-                .send("Ignored - Template Name Missing");
-        }
+            const rawPhone =
+                data.customerNumber ||
+                "";
 
 
-        /* =====================================================
-           📞 FILTER 3
-           Phone Number
-        ===================================================== */
-
-        if (!phone) {
-
-            console.log(
-                "⛔ Ignored: Customer phone number missing"
-            );
-
-            return res
-                .status(200)
-                .send("Ignored - Phone Missing");
-        }
+            const phone =
+                formatPhone(rawPhone);
 
 
-        /* =====================================================
-           📅 Current India Date
-        ===================================================== */
-
-        const currentDateIndia =
-            getCurrentDateIndia();
-
-
-        /* =====================================================
-           📦 HUBSPOT PROPERTIES
-        ===================================================== */
-
-        const properties = {
-
-            firstname: name,
-
-            phone: phone,
-
-            email: `${phone}@noemail.com`,
-
-            wa_creative: "Cold_data",
-
-            date_whatapps: currentDateIndia,
-
-            profession_category: "Doctor"
-        };
+            const integratedNumber =
+                String(
+                    data.integratedNumber ||
+                    ""
+                ).trim();
 
 
-        log(
-            "📦 HUBSPOT PAYLOAD",
-            properties
-        );
+            // Template name is required,
+            // but its value can be anything
+            const templateName =
+                String(
+                    data.templateName ||
+                    ""
+                ).trim();
 
 
-        /* =====================================================
-           🔍 SEARCH EXISTING CONTACT
-        ===================================================== */
-
-        const existingContact =
-            await findContact(phone);
+            const rawMessage =
+                data.messages ||
+                data.text ||
+                "";
 
 
-        /* =====================================================
-           🔄 EXISTING CONTACT → UPDATE
-        ===================================================== */
-
-        if (existingContact) {
-
-            console.log(
-                `🔄 Updating existing contact: ${existingContact.id}`
-            );
-
-            const updated =
-                await updateContact(
-                    existingContact.id,
-                    properties
+            const message =
+                extractMessage(
+                    rawMessage
                 );
 
-            if (!updated) {
 
-                return res
-                    .status(500)
-                    .send("HubSpot Update Failed");
-            }
-        }
+            /* =================================================
+               PARSED DATA
+            ================================================= */
 
-
-        /* =====================================================
-           🆕 CONTACT NOT FOUND → CREATE
-        ===================================================== */
-
-        else {
-
-            console.log(
-                "🆕 Contact not found. Creating new contact..."
+            log(
+                "📊 PARSED WEBHOOK DATA",
+                {
+                    name,
+                    rawPhone,
+                    phone,
+                    integratedNumber,
+                    templateName,
+                    message
+                }
             );
 
-            const created =
-                await createContact(properties);
 
-            if (!created) {
+            /* =================================================
+               🎯 FILTER 1
+               INTEGRATED NUMBER
+            ================================================= */
+
+            if (
+                integratedNumber !==
+                TARGET_NUMBER
+            ) {
+
+                console.log(
+                    `⛔ Ignored: Wrong integrated number - ${integratedNumber}`
+                );
 
                 return res
-                    .status(500)
-                    .send("HubSpot Create Failed");
+                    .status(200)
+                    .send(
+                        "Ignored - Wrong Integrated Number"
+                    );
             }
+
+
+            /* =================================================
+               🎯 FILTER 2
+               TEMPLATE NAME
+               
+               Template name can be ANY value,
+               but it MUST exist.
+            ================================================= */
+
+            if (!templateName) {
+
+                console.log(
+                    "⛔ Ignored: templateName missing or empty"
+                );
+
+                return res
+                    .status(200)
+                    .send(
+                        "Ignored - Template Name Missing"
+                    );
+            }
+
+
+            /* =================================================
+               📞 FILTER 3
+               PHONE NUMBER
+            ================================================= */
+
+            if (!phone) {
+
+                console.log(
+                    "⛔ Ignored: Customer phone missing"
+                );
+
+                return res
+                    .status(200)
+                    .send(
+                        "Ignored - Phone Missing"
+                    );
+            }
+
+
+            /* =================================================
+               📅 CURRENT INDIA DATE
+            ================================================= */
+
+            const currentDateIndia =
+                getCurrentDateIndia();
+
+
+            /* =================================================
+               📦 HUBSPOT PROPERTIES
+            ================================================= */
+
+            const properties = {
+
+                firstname: name,
+
+                phone: phone,
+
+                email:
+                    `${phone}@noemail.com`,
+
+                // WhatsApp creative
+                wa_creative:
+                    "Cold_data",
+
+                // Correct HubSpot internal name
+                date_whatsapp:
+                    currentDateIndia,
+
+                // Profession
+                profession_category:
+                    "Doctor"
+            };
+
+
+            log(
+                "📦 HUBSPOT PAYLOAD",
+                properties
+            );
+
+
+            /* =================================================
+               🔍 SEARCH EXISTING CONTACT
+            ================================================= */
+
+            const existingContact =
+                await findContact(phone);
+
+
+            /* =================================================
+               🔄 EXISTING CONTACT
+            ================================================= */
+
+            if (existingContact) {
+
+                console.log(
+                    `🔄 Existing contact found: ${existingContact.id}`
+                );
+
+                const updated =
+                    await updateContact(
+                        existingContact.id,
+                        properties
+                    );
+
+                if (!updated) {
+
+                    return res
+                        .status(500)
+                        .send(
+                            "HubSpot Update Failed"
+                        );
+                }
+
+            }
+
+
+            /* =================================================
+               🆕 NEW CONTACT
+            ================================================= */
+
+            else {
+
+                console.log(
+                    "🆕 Contact not found. Creating..."
+                );
+
+                const created =
+                    await createContact(
+                        properties
+                    );
+
+                if (!created) {
+
+                    return res
+                        .status(500)
+                        .send(
+                            "HubSpot Create Failed"
+                        );
+                }
+            }
+
+
+            /* =================================================
+               ✅ SUCCESS
+            ================================================= */
+
+            console.log(
+                `✅ Processed Successfully | Template: ${templateName} | Phone: ${phone} | Date: ${currentDateIndia}`
+            );
+
+            return res
+                .status(200)
+                .send("Processed");
+
+
+        } catch (error) {
+
+            console.error(
+                "🔥 WEBHOOK ERROR:",
+                error.response?.data ||
+                error.message
+            );
+
+            return res
+                .status(500)
+                .send(
+                    "Internal Server Error"
+                );
         }
-
-
-        /* =====================================================
-           ✅ SUCCESS
-        ===================================================== */
-
-        console.log(
-            `✅ Processed successfully | Template: ${templateName} | Phone: ${phone}`
-        );
-
-        return res
-            .status(200)
-            .send("Processed");
-
-
-    } catch (error) {
-
-        console.error(
-            "🔥 WEBHOOK ERROR:",
-            error.response?.data ||
-            error.message
-        );
-
-        return res
-            .status(500)
-            .send("Internal Server Error");
     }
-});
+);
 
 
 /* =========================================================
    🚀 START SERVER
 ========================================================= */
 
-app.listen(PORT, () => {
+app.listen(
+    PORT,
+    () => {
 
-    console.log(
-        `🚀 Server running on port ${PORT}`
-    );
+        console.log(
+            `🚀 Server running on port ${PORT}`
+        );
 
-    console.log(
-        `🎯 Target Integrated Number: ${TARGET_NUMBER}`
-    );
+        console.log(
+            `🎯 Target Integrated Number: ${TARGET_NUMBER}`
+        );
 
-    console.log(
-        "📩 MSG91 Webhook: /webhook/msg91"
-    );
-
-});
+        console.log(
+            "📩 Webhook: /webhook/msg91"
+        );
+    }
+);
