@@ -27,11 +27,7 @@ function formatPhone(phone) {
     const clean = phone.replace(/\D/g, "");
 
     if (clean.length === 10) return `+91${clean}`;
-
-    if (clean.length === 12 && clean.startsWith("91")) {
-        return `+${clean}`;
-    }
-
+    if (clean.length === 12 && clean.startsWith("91")) return `+${clean}`;
     if (phone.startsWith("+")) return phone;
 
     return `+${clean}`;
@@ -50,7 +46,6 @@ function generatePhoneVariants(phone) {
 
     if (clean.length === 12 && clean.startsWith("91")) {
         const num = clean.slice(2);
-
         variants.add(`+91${num}`);
         variants.add(clean);
         variants.add(num);
@@ -69,17 +64,6 @@ function extractMessage(msg) {
     }
 }
 
-// 🇮🇳 Current India Date
-// Format: YYYY-MM-DD
-function getCurrentDateIndia() {
-    return new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'Asia/Kolkata',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit'
-    }).format(new Date());
-}
-
 // Logger
 function log(title, data) {
     console.log(`\n🔹 ${title}`);
@@ -90,7 +74,7 @@ function log(title, data) {
    🔍 HubSpot Functions
 ================================ */
 
-// Search contact by multiple phone formats
+// Search contact (multi-format)
 async function findContact(phone) {
     try {
         const variants = generatePhoneVariants(phone);
@@ -127,11 +111,7 @@ async function findContact(phone) {
         return null;
 
     } catch (err) {
-        console.error(
-            "❌ Search Error:",
-            err.response?.data || err.message
-        );
-
+        console.error("❌ Search Error:", err.response?.data || err.message);
         return null;
     }
 }
@@ -141,9 +121,7 @@ async function createContact(properties) {
     try {
         const res = await axios.post(
             'https://api.hubapi.com/crm/v3/objects/contacts',
-            {
-                properties
-            },
+            { properties },
             {
                 headers: {
                     Authorization: `Bearer ${HUBSPOT_TOKEN}`,
@@ -154,15 +132,8 @@ async function createContact(properties) {
 
         log("✅ Contact Created", res.data);
 
-        return res.data;
-
     } catch (err) {
-        console.error(
-            "❌ Create Error:",
-            err.response?.data || err.message
-        );
-
-        return null;
+        console.error("❌ Create Error:", err.response?.data || err.message);
     }
 }
 
@@ -171,9 +142,7 @@ async function updateContact(id, properties) {
     try {
         const res = await axios.patch(
             `https://api.hubapi.com/crm/v3/objects/contacts/${id}`,
-            {
-                properties
-            },
+            { properties },
             {
                 headers: {
                     Authorization: `Bearer ${HUBSPOT_TOKEN}`,
@@ -184,15 +153,8 @@ async function updateContact(id, properties) {
 
         log("🔄 Contact Updated", res.data);
 
-        return res.data;
-
     } catch (err) {
-        console.error(
-            "❌ Update Error:",
-            err.response?.data || err.message
-        );
-
-        return null;
+        console.error("❌ Update Error:", err.response?.data || err.message);
     }
 }
 
@@ -206,161 +168,65 @@ app.get('/', (req, res) => {
     res.send("Server Running ✅");
 });
 
-/* ================================
-   📩 MSG91 WEBHOOK
-================================ */
-
+// Webhook
 app.post('/webhook/msg91', async (req, res) => {
     try {
-
-        // RAW WEBHOOK
         log("📩 RAW WEBHOOK BODY", req.body);
 
         const data = req.body;
 
-        // Customer Name
         const name = data.customerName || "Unknown";
-
-        // Customer Number
         const rawPhone = data.customerNumber;
-
-        if (!rawPhone) {
-            console.log("⛔ No customer number received");
-            return res.status(200).send("No phone");
-        }
-
-        // Format phone
         const phone = formatPhone(rawPhone);
 
-        // Extract message
         const rawMessage = data.messages || data.text || "";
         const message = extractMessage(rawMessage);
 
-        // Integrated Number
         const integratedNumber = data.integratedNumber;
 
-        log("📊 Parsed Data", {
-            name,
-            phone,
-            message,
-            integratedNumber
-        });
+        log("📊 Parsed Data", { name, phone, message, integratedNumber });
 
-        /* ================================
-           🎯 FILTER BY INTEGRATED NUMBER
-        ================================= */
-
+        // 🎯 FILTER BY INTEGRATED NUMBER ONLY
         if (integratedNumber !== TARGET_NUMBER) {
-
-            console.log(
-                "⛔ Ignored: wrong integrated number",
-                integratedNumber
-            );
-
+            console.log("⛔ Ignored: wrong integrated number");
             return res.status(200).send("Ignored");
         }
 
-        /* ================================
-           📅 CURRENT INDIA DATE
-        ================================= */
-
-        const currentDate = getCurrentDateIndia();
-
-        console.log("📅 WhatsApp Date:", currentDate);
-
-        /* ================================
-           📦 HUBSPOT PROPERTIES
-        ================================= */
-
         const properties = {
-
-            // Customer name
             firstname: name,
-
-            // Phone
             phone: phone,
-
-            // Dummy email
             email: `${phone}@noemail.com`,
-
-            // WhatsApp Creative
-            wa_creative: "Cold_data",
-
-            // WhatsApp Date
-            date_whatsapp: currentDate,
-
-            // Profession Category
-            profession_category: "Doctor"
+            wa_creative: "Cold_data"
         };
 
         log("📦 HubSpot Payload", properties);
 
-        /* ================================
-           🔍 SEARCH EXISTING CONTACT
-        ================================= */
-
+        // Search + deduplicate
         const existing = await findContact(phone);
 
-        /* ================================
-           🔄 UPDATE OR CREATE
-        ================================= */
-
         if (existing) {
-
-            console.log(
-                "🔄 Updating existing contact:",
-                existing.id
-            );
-
-            await updateContact(
-                existing.id,
-                properties
-            );
-
+            console.log("🔄 Updating existing contact:", existing.id);
+            await updateContact(existing.id, properties);
         } else {
-
-            console.log(
-                "🆕 Creating new contact"
-            );
-
-            await createContact(
-                properties
-            );
+            console.log("🆕 Creating new contact");
+            await createContact(properties);
         }
 
-        console.log(
-            "✅ Webhook processed successfully\n"
-        );
+        console.log("✅ Webhook processed successfully\n");
 
-        return res
-            .status(200)
-            .send("Processed");
+        res.status(200).send("Processed");
 
     } catch (error) {
-
-        console.error(
-            "🔥 Webhook Error:",
-            error.response?.data || error.message
-        );
-
-        return res
-            .status(500)
-            .send("Error");
+        console.error("🔥 Webhook Error:", error.response?.data || error.message);
+        res.status(500).send("Error");
     }
 });
 
 /* ================================
-   🚀 START SERVER
+   🚀 Start Server
 ================================ */
 
 app.listen(PORT, () => {
-
-    console.log(
-        `🚀 Server running on port ${PORT}`
-    );
-
-    console.log(
-        `🎯 Target Integrated Number: ${TARGET_NUMBER}`
-    );
-
+    console.log(`🚀 Server running on port ${PORT}`);
 });
+  is code me date_whatapps hai usme bhi current name dalo
