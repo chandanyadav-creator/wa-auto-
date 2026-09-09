@@ -490,32 +490,31 @@ app.post(
                📦 HUBSPOT PROPERTIES
             ================================================= */
 
-            const properties = {
+           const properties = {
 
-                firstname: name,
+    firstname: name,
 
-                phone: phone,
+    phone: phone,
 
-                email:
-                    `${phone}@noemail.com`,
+    email:
+        `${phone}@noemail.com`,
 
-                // WhatsApp creative
-                wa_creative:
-                    "india best selling ecg",
+    // WhatsApp creative
+    wa_creative:
+        "India's Best Selling 12 Lead ECG",
 
-                // Correct HubSpot internal name
-                date_whatsapp:
-                    currentDateIndia,
+    // WhatsApp date
+    date_whatsapp:
+        currentDateIndia,
 
-                // Profession
-                profession_category:
-                    "Doctor"
+    // Profession
+    profession_category:
+        "Doctor",
 
-                custom_offline_sources_trail:
+    // Offline Source
+    custom_offline_sources_trail:
         "Data Mining"
-            };
-
-
+};
             log(
                 "📦 HUBSPOT PAYLOAD",
                 properties
