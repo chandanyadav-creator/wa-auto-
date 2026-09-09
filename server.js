@@ -501,7 +501,7 @@ app.post(
 
                 // WhatsApp creative
                 wa_creative:
-                    "Cold_data",
+                    "india best selling ecg",
 
                 // Correct HubSpot internal name
                 date_whatsapp:
@@ -510,6 +510,9 @@ app.post(
                 // Profession
                 profession_category:
                     "Doctor"
+
+                custom_offline_sources_trail:
+        "Data Mining"
             };
 
 
