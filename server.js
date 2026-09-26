@@ -46,12 +46,17 @@ function getCurrentDateIndia() {
 
 // 📞 Format phone number to +91XXXXXXXXXX
 function formatPhone(phone) {
-    if (!phone) return "";
+
+    if (!phone) {
+        return "";
+    }
 
     const original = String(phone).trim();
     const clean = original.replace(/\D/g, "");
 
-    if (!clean) return "";
+    if (!clean) {
+        return "";
+    }
 
     // 10 digit Indian number
     if (clean.length === 10) {
@@ -74,7 +79,10 @@ function formatPhone(phone) {
 
 // 📞 Generate phone variants for HubSpot search
 function generatePhoneVariants(phone) {
-    if (!phone) return [];
+
+    if (!phone) {
+        return [];
+    }
 
     const clean = String(phone).replace(/\D/g, "");
 
@@ -82,31 +90,40 @@ function generatePhoneVariants(phone) {
 
     // 10 digit number
     if (clean.length === 10) {
+
         variants.add(clean);
         variants.add(`91${clean}`);
         variants.add(`+91${clean}`);
+
     }
 
     // 12 digit number starting with 91
     else if (clean.length === 12 && clean.startsWith("91")) {
+
         const number = clean.substring(2);
 
         variants.add(number);
         variants.add(clean);
         variants.add(`+${clean}`);
+
     }
 
     // Fallback
     else {
+
         variants.add(clean);
         variants.add(`+${clean}`);
+
     }
 
     return [...variants];
 }
 
 
-// 📩 Extract message from MSG91 payload
+/* =========================================================
+   📩 EXTRACT MESSAGE FROM MSG91 PAYLOAD
+========================================================= */
+
 function extractMessage(messageData) {
 
     if (!messageData) {
@@ -150,7 +167,10 @@ function extractMessage(messageData) {
 }
 
 
-// 📝 Logger
+/* =========================================================
+   📝 LOGGER
+========================================================= */
+
 function log(title, data) {
 
     console.log(`\n🔹 ${title}`);
@@ -342,6 +362,7 @@ app.post(
 
             const data = req.body || {};
 
+
             /* =================================================
                RAW WEBHOOK
             ================================================= */
@@ -490,10 +511,10 @@ app.post(
 
             /* =================================================
                🏥 PROFESSION CATEGORY
-               
+
                If templateName contains "diag"
                → Healthcare Professional
-               
+
                Otherwise
                → Doctor
             ================================================= */
@@ -508,6 +529,7 @@ app.post(
 
             /* =================================================
                📦 HUBSPOT PROPERTIES
+               FOR NEW CONTACT ONLY
             ================================================= */
 
             const properties = {
@@ -538,7 +560,7 @@ app.post(
 
 
             log(
-                "📦 HUBSPOT PAYLOAD",
+                "📦 HUBSPOT PAYLOAD FOR NEW CONTACT",
                 properties
             );
 
@@ -553,6 +575,12 @@ app.post(
 
             /* =================================================
                🔄 EXISTING CONTACT
+
+               IMPORTANT:
+               Existing contact me SIRF
+               date_whatsapp update hoga.
+
+               Baaki koi property update nahi hogi.
             ================================================= */
 
             if (existingContact) {
@@ -561,10 +589,17 @@ app.post(
                     `🔄 Existing contact found: ${existingContact.id}`
                 );
 
+                console.log(
+                    `📅 Updating ONLY date_whatsapp: ${currentDateIndia}`
+                );
+
                 const updated =
                     await updateContact(
                         existingContact.id,
-                        properties
+                        {
+                            date_whatsapp:
+                                currentDateIndia
+                        }
                     );
 
                 if (!updated) {
@@ -576,11 +611,18 @@ app.post(
                         );
                 }
 
+                console.log(
+                    "✅ Existing contact updated successfully. Only date_whatsapp changed."
+                );
+
             }
 
 
             /* =================================================
                🆕 NEW CONTACT
+
+               New contact me saari properties
+               create hongi.
             ================================================= */
 
             else {
@@ -602,6 +644,10 @@ app.post(
                             "HubSpot Create Failed"
                         );
                 }
+
+                console.log(
+                    "✅ New contact created successfully."
+                );
             }
 
 
