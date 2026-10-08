@@ -519,12 +519,20 @@ app.post(
                → Doctor
             ================================================= */
 
-            const professionCategory =
-                templateName
-                    .toLowerCase()
-                    .includes("diag")
-                        ? "Healthcare Professional"
-                        : "Doctor";
+         
+const templateLower = templateName.toLowerCase();
+
+let professionCategory;
+
+if (templateLower.includes("pharm")) {
+    professionCategory = "Pharmacy";
+} 
+else if (templateLower.includes("diag")) {
+    professionCategory = "Healthcare Professional";
+} 
+else {
+    professionCategory = "Doctor";
+}
 
 
             /* =================================================
