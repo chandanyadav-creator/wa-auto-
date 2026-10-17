@@ -35,12 +35,14 @@ const hubspot = axios.create({
 
 // 🇮🇳 Current date in India
 function getCurrentDateIndia() {
+
     return new Intl.DateTimeFormat("en-CA", {
         timeZone: "Asia/Kolkata",
         year: "numeric",
         month: "2-digit",
         day: "2-digit"
     }).format(new Date());
+
 }
 
 
@@ -64,7 +66,10 @@ function formatPhone(phone) {
     }
 
     // 12 digit number starting with 91
-    if (clean.length === 12 && clean.startsWith("91")) {
+    if (
+        clean.length === 12 &&
+        clean.startsWith("91")
+    ) {
         return `+${clean}`;
     }
 
@@ -98,7 +103,10 @@ function generatePhoneVariants(phone) {
     }
 
     // 12 digit number starting with 91
-    else if (clean.length === 12 && clean.startsWith("91")) {
+    else if (
+        clean.length === 12 &&
+        clean.startsWith("91")
+    ) {
 
         const number = clean.substring(2);
 
@@ -168,6 +176,71 @@ function extractMessage(messageData) {
 
 
 /* =========================================================
+   📞 EXTRACT CUSTOMER NUMBER
+========================================================= */
+
+/*
+   ONLY CHANGE FROM PREVIOUS CODE:
+
+   First:
+   data.customerNumber
+
+   If empty:
+   data.messages[].from
+*/
+
+function extractCustomerNumber(data) {
+
+    // 1️⃣ Original MSG91 customerNumber
+    if (data?.customerNumber) {
+
+        const number =
+            String(data.customerNumber).trim();
+
+        if (number) {
+            return number;
+        }
+    }
+
+    // 2️⃣ Fallback: messages[].from
+    if (data?.messages) {
+
+        try {
+
+            const parsed =
+                typeof data.messages === "string"
+                    ? JSON.parse(data.messages)
+                    : data.messages;
+
+            if (Array.isArray(parsed)) {
+
+                for (const item of parsed) {
+
+                    if (item?.from) {
+
+                        return String(
+                            item.from
+                        ).trim();
+
+                    }
+                }
+            }
+
+        } catch (error) {
+
+            console.error(
+                "❌ Error extracting phone from messages:",
+                error.message
+            );
+
+        }
+    }
+
+    return "";
+}
+
+
+/* =========================================================
    📝 LOGGER
 ========================================================= */
 
@@ -195,7 +268,8 @@ function log(title, data) {
 
 async function findContact(phone) {
 
-    const variants = generatePhoneVariants(phone);
+    const variants =
+        generatePhoneVariants(phone);
 
     if (!variants.length) {
 
@@ -215,23 +289,24 @@ async function findContact(phone) {
 
         try {
 
-            const response = await hubspot.post(
-                "/crm/v3/objects/contacts/search",
-                {
-                    filterGroups: [
-                        {
-                            filters: [
-                                {
-                                    propertyName: "phone",
-                                    operator: "EQ",
-                                    value: variant
-                                }
-                            ]
-                        }
-                    ],
-                    limit: 1
-                }
-            );
+            const response =
+                await hubspot.post(
+                    "/crm/v3/objects/contacts/search",
+                    {
+                        filterGroups: [
+                            {
+                                filters: [
+                                    {
+                                        propertyName: "phone",
+                                        operator: "EQ",
+                                        value: variant
+                                    }
+                                ]
+                            }
+                        ],
+                        limit: 1
+                    }
+                );
 
             const results =
                 response.data?.results || [];
@@ -273,12 +348,13 @@ async function createContact(properties) {
 
     try {
 
-        const response = await hubspot.post(
-            "/crm/v3/objects/contacts",
-            {
-                properties
-            }
-        );
+        const response =
+            await hubspot.post(
+                "/crm/v3/objects/contacts",
+                {
+                    properties
+                }
+            );
 
         console.log(
             "✅ Contact Created:",
@@ -311,12 +387,13 @@ async function updateContact(
 
     try {
 
-        const response = await hubspot.patch(
-            `/crm/v3/objects/contacts/${contactId}`,
-            {
-                properties
-            }
-        );
+        const response =
+            await hubspot.patch(
+                `/crm/v3/objects/contacts/${contactId}`,
+                {
+                    properties
+                }
+            );
 
         console.log(
             "✅ Contact Updated:",
@@ -347,6 +424,7 @@ app.get("/", (req, res) => {
     res.status(200).send(
         "MSG91 → HubSpot Webhook Running ✅"
     );
+
 });
 
 
@@ -364,7 +442,7 @@ app.post(
 
 
             /* =================================================
-               RAW WEBHOOK
+               🔴 RAW WEBHOOK
             ================================================= */
 
             log(
@@ -374,7 +452,7 @@ app.post(
 
 
             /* =================================================
-               EXTRACT DATA
+               📊 EXTRACT DATA
             ================================================= */
 
             const name =
@@ -384,9 +462,12 @@ app.post(
                 ).trim();
 
 
+            // 🔥 ONLY CHANGE:
+            // customerNumber empty ho to
+            // messages[].from se number lega
+
             const rawPhone =
-                data.customerNumber ||
-                "";
+                extractCustomerNumber(data);
 
 
             const phone =
@@ -422,7 +503,7 @@ app.post(
 
 
             /* =================================================
-               PARSED DATA
+               📊 PARSED DATA
             ================================================= */
 
             log(
@@ -464,8 +545,7 @@ app.post(
                🎯 FILTER 2
                TEMPLATE NAME
 
-               Template name can be ANY value,
-               but it MUST exist.
+               SAME PREVIOUS LOGIC
             ================================================= */
 
             if (!templateName) {
@@ -512,6 +592,9 @@ app.post(
             /* =================================================
                🏥 PROFESSION CATEGORY
 
+               If templateName contains "pharm"
+               → Pharmacy
+
                If templateName contains "diag"
                → Healthcare Professional
 
@@ -519,20 +602,37 @@ app.post(
                → Doctor
             ================================================= */
 
-         
-const templateLower = templateName.toLowerCase();
+            const templateLower =
+                templateName.toLowerCase();
 
-let professionCategory;
 
-if (templateLower.includes("pharm")) {
-    professionCategory = "Pharmacy";
-} 
-else if (templateLower.includes("diag")) {
-    professionCategory = "Healthcare Professional";
-} 
-else {
-    professionCategory = "Doctor";
-}
+            let professionCategory;
+
+
+            if (
+                templateLower.includes("pharm")
+            ) {
+
+                professionCategory =
+                    "Pharmacy";
+
+            }
+
+            else if (
+                templateLower.includes("diag")
+            ) {
+
+                professionCategory =
+                    "Healthcare Professional";
+
+            }
+
+            else {
+
+                professionCategory =
+                    "Doctor";
+
+            }
 
 
             /* =================================================
@@ -542,9 +642,11 @@ else {
 
             const properties = {
 
-                firstname: name,
+                firstname:
+                    name,
 
-                phone: phone,
+                phone:
+                    phone,
 
                 email:
                     `${phone}@noemail.com`,
@@ -564,6 +666,7 @@ else {
                 // Offline Source
                 custom_offline_sources_trail:
                     "Data Mining"
+
             };
 
 
@@ -601,6 +704,7 @@ else {
                     `📅 Updating ONLY date_whatsapp: ${currentDateIndia}`
                 );
 
+
                 const updated =
                     await updateContact(
                         existingContact.id,
@@ -610,6 +714,7 @@ else {
                         }
                     );
 
+
                 if (!updated) {
 
                     return res
@@ -618,6 +723,7 @@ else {
                             "HubSpot Update Failed"
                         );
                 }
+
 
                 console.log(
                     "✅ Existing contact updated successfully. Only date_whatsapp changed."
@@ -639,10 +745,12 @@ else {
                     "🆕 Contact not found. Creating..."
                 );
 
+
                 const created =
                     await createContact(
                         properties
                     );
+
 
                 if (!created) {
 
@@ -653,9 +761,11 @@ else {
                         );
                 }
 
+
                 console.log(
                     "✅ New contact created successfully."
                 );
+
             }
 
 
@@ -667,9 +777,12 @@ else {
                 `✅ Processed Successfully | Template: ${templateName} | Profession: ${professionCategory} | Phone: ${phone} | Date: ${currentDateIndia}`
             );
 
+
             return res
                 .status(200)
-                .send("Processed");
+                .send(
+                    "Processed"
+                );
 
 
         } catch (error) {
@@ -680,12 +793,15 @@ else {
                 error.message
             );
 
+
             return res
                 .status(500)
                 .send(
                     "Internal Server Error"
                 );
+
         }
+
     }
 );
 
@@ -709,5 +825,6 @@ app.listen(
         console.log(
             "📩 Webhook: /webhook/msg91"
         );
+
     }
 );
