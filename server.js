@@ -1,3 +1,4 @@
+
 require("dotenv").config();
 
 const express = require("express");
@@ -178,16 +179,6 @@ function extractMessage(messageData) {
 /* =========================================================
    📞 EXTRACT CUSTOMER NUMBER
 ========================================================= */
-
-/*
-   ONLY CHANGE FROM PREVIOUS CODE:
-
-   First:
-   data.customerNumber
-
-   If empty:
-   data.messages[].from
-*/
 
 function extractCustomerNumber(data) {
 
@@ -462,10 +453,8 @@ app.post(
                 ).trim();
 
 
-            // 🔥 ONLY CHANGE:
             // customerNumber empty ho to
             // messages[].from se number lega
-
             const rawPhone =
                 extractCustomerNumber(data);
 
@@ -481,8 +470,7 @@ app.post(
                 ).trim();
 
 
-            // Template name is required,
-            // but its value can be anything
+            // Template name
             const templateName =
                 String(
                     data.templateName ||
@@ -544,8 +532,6 @@ app.post(
             /* =================================================
                🎯 FILTER 2
                TEMPLATE NAME
-
-               SAME PREVIOUS LOGIC
             ================================================= */
 
             if (!templateName) {
@@ -636,8 +622,31 @@ app.post(
 
 
             /* =================================================
+               📦 OFFLINE SOURCE LOGIC
+
+               NEW CONTACT ONLY
+
+               If template name starts with "purch"
+               → Purchased Data
+
+               Otherwise
+               → Data Mining
+            ================================================= */
+
+            const offlineSource =
+                templateLower.startsWith("purch")
+                    ? "Purchased Data"
+                    : "Data Mining";
+
+
+            console.log(
+                `📦 Offline Source: ${offlineSource}`
+            );
+
+
+            /* =================================================
                📦 HUBSPOT PROPERTIES
-               FOR NEW CONTACT ONLY
+               FOR NEW CONTACT
             ================================================= */
 
             const properties = {
@@ -651,9 +660,10 @@ app.post(
                 email:
                     `${phone}@noemail.com`,
 
-                // WhatsApp creative
+                // 🔥 Template name
+                // Existing/New contact dono me
                 wa_creative:
-                    "India's Best Selling 12 Lead ECG",
+                    templateName,
 
                 // WhatsApp date
                 date_whatsapp:
@@ -665,7 +675,7 @@ app.post(
 
                 // Offline Source
                 custom_offline_sources_trail:
-                    "Data Mining"
+                    offlineSource
 
             };
 
@@ -687,11 +697,13 @@ app.post(
             /* =================================================
                🔄 EXISTING CONTACT
 
-               IMPORTANT:
-               Existing contact me SIRF
-               date_whatsapp update hoga.
+               Existing contact me:
 
-               Baaki koi property update nahi hogi.
+               1. date_whatsapp update
+               2. wa_creative update with current
+                  templateName
+
+               Baaki properties update nahi hongi.
             ================================================= */
 
             if (existingContact) {
@@ -701,7 +713,11 @@ app.post(
                 );
 
                 console.log(
-                    `📅 Updating ONLY date_whatsapp: ${currentDateIndia}`
+                    `📅 Updating date_whatsapp: ${currentDateIndia}`
+                );
+
+                console.log(
+                    `📝 Updating wa_creative/template: ${templateName}`
                 );
 
 
@@ -710,7 +726,10 @@ app.post(
                         existingContact.id,
                         {
                             date_whatsapp:
-                                currentDateIndia
+                                currentDateIndia,
+
+                            wa_creative:
+                                templateName
                         }
                     );
 
@@ -726,7 +745,15 @@ app.post(
 
 
                 console.log(
-                    "✅ Existing contact updated successfully. Only date_whatsapp changed."
+                    "✅ Existing contact updated successfully."
+                );
+
+                console.log(
+                    "   • date_whatsapp updated"
+                );
+
+                console.log(
+                    "   • wa_creative/template updated"
                 );
 
             }
@@ -737,12 +764,22 @@ app.post(
 
                New contact me saari properties
                create hongi.
+
+               purch* template:
+               Purchased Data
+
+               Other template:
+               Data Mining
             ================================================= */
 
             else {
 
                 console.log(
                     "🆕 Contact not found. Creating..."
+                );
+
+                console.log(
+                    `📦 New Contact Offline Source: ${offlineSource}`
                 );
 
 
@@ -774,7 +811,7 @@ app.post(
             ================================================= */
 
             console.log(
-                `✅ Processed Successfully | Template: ${templateName} | Profession: ${professionCategory} | Phone: ${phone} | Date: ${currentDateIndia}`
+                `✅ Processed Successfully | Template: ${templateName} | Profession: ${professionCategory} | Offline Source: ${offlineSource} | Phone: ${phone} | Date: ${currentDateIndia}`
             );
 
 
