@@ -9,101 +9,144 @@ const crypto = require("crypto");
 
 const app = express();
 
-app.use(express.json({ limit: "5mb" }));
-app.use(express.urlencoded({ extended: true }));
-
-// =====================================================
-// CONFIGURATION
-// =====================================================
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 
 const PORT = process.env.PORT || 3000;
-
 const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN;
 const MSG91_AUTHKEY = process.env.MSG91_AUTHKEY;
 
-// MSG91 Integrated WhatsApp Number
 const TARGET_NUMBER = "917088000907";
 
 const HUBSPOT_BASE_URL = "https://api.hubapi.com";
-
 const MSG91_TEMPLATE_URL =
-  "https://control.msg91.com/api/v5/whatsapp/get-template-plugins/";
+  "https://control.msg91.com/api/v5/whatsapp/get-template-plugins/?plugin=clevertap&number=" +
+  TARGET_NUMBER;
 
-const HUBSPOT_HEADERS = {
-  Authorization: `Bearer ${HUBSPOT_TOKEN}`,
-  "Content-Type": "application/json",
-};
-
-const MSG91_HEADERS = {
-  authkey: MSG91_AUTHKEY,
-  Accept: "application/json",
-};
-
-const DEDUPE_FILE = path.join(
+const PROCESSED_FILE = path.join(
   __dirname,
   "processed_button_events.json"
 );
 
-const DEDUPE_RETENTION_DAYS = 7;
-const PROCESSING_LOCK_MS = 5 * 60 * 1000;
+const DEDUPE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const PROCESSING_LEASE_MS = 5 * 60 * 1000;
 
 const processingEvents = new Set();
 
-// =====================================================
-// BASIC HELPERS
-// =====================================================
+const hubspot = axios.create({
+  baseURL: HUBSPOT_BASE_URL,
+  timeout: 30000,
+  headers: {
+    Authorization: `Bearer ${HUBSPOT_TOKEN}`,
+    "Content-Type": "application/json",
+  },
+});
 
-function parseJSON(value) {
-  if (typeof value !== "string") return value;
+// --------------------------------------------------
+// DEBUG LOGGING
+// --------------------------------------------------
 
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
+function logInfo(message, data = {}) {
+  console.log(
+    `[INFO ${new Date().toISOString()}] ${message}`,
+    data
+  );
+}
+
+function logError(message, error) {
+  console.error(`[ERROR ${new Date().toISOString()}] ${message}`);
+
+  if (error?.response) {
+    console.error("HTTP STATUS:", error.response.status);
+    console.error(
+      "API RESPONSE:",
+      JSON.stringify(error.response.data, null, 2)
+    );
+  } else {
+    console.error("ERROR MESSAGE:", error?.message || error);
   }
 }
+
+function maskPhone(phone) {
+  const number = normalizePhone(phone);
+
+  if (!number) return "N/A";
+
+  return number.length > 4
+    ? number.slice(0, 2) + "******" + number.slice(-4)
+    : "******";
+}
+
+// --------------------------------------------------
+// GENERAL HELPERS
+// --------------------------------------------------
 
 function normalizePhone(phone) {
   if (!phone) return "";
 
   let number = String(phone).replace(/\D/g, "");
 
-  if (number.startsWith("0")) {
-    number = number.substring(1);
-  }
-
-  if (number.length === 10) {
-    number = "91" + number;
+  if (number.startsWith("00")) {
+    number = number.substring(2);
   }
 
   return number;
 }
 
-// HubSpot E.164 phone format
 function formatHubSpotPhone(phone) {
   const number = normalizePhone(phone);
-
   return number ? "+" + number : "";
 }
 
-function getPhoneVariants(phone) {
-  const number = normalizePhone(phone);
+function cleanCustomerName(name) {
+  if (name === undefined || name === null) return "";
 
-  if (!number) return [];
+  const value = String(name).trim();
 
-  const variants = new Set([
-    number,
-    "+" + number,
-  ]);
-
-  if (number.startsWith("91") && number.length === 12) {
-    const withoutCountryCode = number.substring(2);
-
-    variants.add(withoutCountryCode);
-    variants.add("+91" + withoutCountryCode);
+  if (
+    !value ||
+    value.toLowerCase() === "null" ||
+    value.toLowerCase() === "undefined" ||
+    value.includes("{{")
+  ) {
+    return "";
   }
 
-  return [...variants];
+  return value;
+}
+
+function getCustomerName(data, messages) {
+  // MSG91 top-level customerName is the primary source.
+  let name = cleanCustomerName(data.customerName);
+
+  // Fallbacks in case a future MSG91 payload places it elsewhere.
+  if (!name) {
+    name = cleanCustomerName(data.customer_name);
+  }
+
+  if (!name) {
+    name = cleanCustomerName(data.contacts?.[0]?.profile?.name);
+  }
+
+  if (!name && messages?.[0]?.contacts?.[0]?.profile?.name) {
+    name = cleanCustomerName(
+      messages[0].contacts[0].profile.name
+    );
+  }
+
+  return name || "WhatsApp Lead";
+}
+
+function getHubSpotDateValue() {
+  const now = new Date();
+
+  const utcMidnight = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate()
+  );
+
+  return String(utcMidnight);
 }
 
 function escapeHTML(value) {
@@ -115,542 +158,60 @@ function escapeHTML(value) {
     .replace(/'/g, "&#039;");
 }
 
-function safeURL(value) {
-  if (!value) return "";
+function safeURL(url) {
+  if (!url) return "";
 
   try {
-    const parsed = new URL(String(value));
+    const parsed = new URL(String(url));
 
-    if (
-      parsed.protocol !== "https:" &&
-      parsed.protocol !== "http:"
-    ) {
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
       return "";
     }
 
-    return parsed.href;
+    return parsed.toString();
   } catch {
     return "";
   }
 }
 
-function normalizeTimestamp(value) {
-  if (!value) return new Date().toISOString();
-
-  let date;
-
-  if (/^\d+$/.test(String(value))) {
-    let timestamp = Number(value);
-
-    if (timestamp < 100000000000) {
-      timestamp *= 1000;
-    }
-
-    date = new Date(timestamp);
-  } else {
-    date = new Date(value);
+function parseJSON(value, fallback = null) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
   }
 
-  if (Number.isNaN(date.getTime())) {
-    return new Date().toISOString();
+  if (typeof value === "object") {
+    return value;
   }
 
-  return date.toISOString();
-}
-
-function getHubSpotDateValue() {
-  const date = new Date();
-
-  date.setUTCHours(0, 0, 0, 0);
-
-  return String(date.getTime());
-}
-
-// =====================================================
-// DEDUPLICATION STORAGE
-// =====================================================
-
-function readDedupeStore() {
   try {
-    if (!fs.existsSync(DEDUPE_FILE)) {
-      return {};
-    }
-
-    const content = fs.readFileSync(DEDUPE_FILE, "utf8");
-
-    return JSON.parse(content || "{}");
-  } catch (error) {
-    console.error("Dedupe file read error:", error.message);
-    return {};
+    return JSON.parse(value);
+  } catch {
+    return fallback;
   }
-}
-
-function saveDedupeStore(store) {
-  const tempFile = DEDUPE_FILE + ".tmp";
-
-  fs.writeFileSync(
-    tempFile,
-    JSON.stringify(store, null, 2),
-    "utf8"
-  );
-
-  fs.renameSync(tempFile, DEDUPE_FILE);
-}
-
-function cleanupDedupeStore(store) {
-  const cutoff =
-    Date.now() -
-    DEDUPE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-
-  for (const [key, item] of Object.entries(store)) {
-    if (!item || Number(item.updatedAt || 0) < cutoff) {
-      delete store[key];
-    }
-  }
-
-  return store;
 }
 
 function stableStringify(value) {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+
   if (Array.isArray(value)) {
-    return "[" + value.map(stableStringify).join(",") + "]";
+    return `[${value.map(stableStringify).join(",")}]`;
   }
 
-  if (value && typeof value === "object") {
-    const keys = Object.keys(value).sort();
+  const keys = Object.keys(value).sort();
 
-    return (
-      "{" +
-      keys
-        .map(
-          (key) =>
-            JSON.stringify(key) +
-            ":" +
-            stableStringify(value[key])
-        )
-        .join(",") +
-      "}"
-    );
-  }
-
-  return JSON.stringify(value);
+  return `{${keys
+    .map(
+      (key) =>
+        JSON.stringify(key) + ":" + stableStringify(value[key])
+    )
+    .join(",")}}`;
 }
 
-// =====================================================
-// UNIQUE BUTTON EVENT KEY
-// =====================================================
-
-function createButtonEventKey(data, buttonInfo) {
-  // IMPORTANT:
-  // MSG91 sends messages as a JSON STRING.
-  // We use the parsed messages[0].id from buttonInfo.items.
-
-  const firstMessage = buttonInfo.items?.[0] || {};
-
-  const eventId =
-    firstMessage.id ||
-    firstMessage.messageId ||
-    firstMessage.message_id ||
-    data.uuid ||
-    data.messageId ||
-    data.message_id ||
-    data.replyMsgId;
-
-  // Prefer actual incoming button message ID.
-  if (eventId) {
-    return crypto
-      .createHash("sha256")
-      .update("MSG91:" + String(eventId))
-      .digest("hex");
-  }
-
-  // Fallback for payloads without a unique message ID.
-  const fallback = {
-    phone: buttonInfo.phone,
-    templateName: buttonInfo.templateName,
-    buttonText: buttonInfo.buttonText,
-    timestamp: buttonInfo.rawTimestamp || null,
-    payload: data,
-  };
-
-  return crypto
-    .createHash("sha256")
-    .update(stableStringify(fallback))
-    .digest("hex");
-}
-
-function reserveButtonEvent(eventKey) {
-  if (processingEvents.has(eventKey)) {
-    return false;
-  }
-
-  const store = cleanupDedupeStore(readDedupeStore());
-
-  const existing = store[eventKey];
-
-  if (existing && existing.status === "done") {
-    saveDedupeStore(store);
-    return false;
-  }
-
-  if (existing && existing.status === "processing") {
-    const age = Date.now() - Number(existing.updatedAt || 0);
-
-    if (age < PROCESSING_LOCK_MS) {
-      saveDedupeStore(store);
-      return false;
-    }
-  }
-
-  store[eventKey] = {
-    status: "processing",
-    updatedAt: Date.now(),
-  };
-
-  saveDedupeStore(store);
-
-  processingEvents.add(eventKey);
-
-  return true;
-}
-
-function completeButtonEvent(eventKey, noteId) {
-  const store = cleanupDedupeStore(readDedupeStore());
-
-  store[eventKey] = {
-    status: "done",
-    noteId: String(noteId || ""),
-    updatedAt: Date.now(),
-  };
-
-  saveDedupeStore(store);
-
-  processingEvents.delete(eventKey);
-}
-
-function releaseButtonEvent(eventKey) {
-  const store = readDedupeStore();
-
-  if (store[eventKey]?.status === "processing") {
-    delete store[eventKey];
-    saveDedupeStore(store);
-  }
-
-  processingEvents.delete(eventKey);
-}
-
-// =====================================================
-// MSG91 PAYLOAD PARSING
-// =====================================================
-
-function getMessageItems(data) {
-  let messages = parseJSON(data.messages);
-
-  if (Array.isArray(messages)) {
-    return messages;
-  }
-
-  if (messages && typeof messages === "object") {
-    return [messages];
-  }
-
-  const nestedData = parseJSON(data.data);
-
-  if (Array.isArray(nestedData)) {
-    return nestedData;
-  }
-
-  if (nestedData && typeof nestedData === "object") {
-    if (Array.isArray(nestedData.messages)) {
-      return nestedData.messages;
-    }
-
-    return [nestedData];
-  }
-
-  return [data];
-}
-
-function extractButtonInfo(data) {
-  const items = getMessageItems(data);
-
-  const customerNumber =
-    data.customerNumber ||
-    data.customer_number ||
-    data.from ||
-    data.mobile ||
-    data.phone ||
-    items.find((item) => item.from)?.from ||
-    items.find((item) => item.customerNumber)?.customerNumber ||
-    "";
-
-  const phone = normalizePhone(customerNumber);
-
-  const templateName =
-    data.templateName ||
-    data.template_name ||
-    data.template ||
-    data.data?.templateName ||
-    "";
-
-  const templateLanguage =
-    data.templateLanguage ||
-    data.template_language ||
-    data.language ||
-    data.data?.templateLanguage ||
-    "en";
-
-  let buttonText = "";
-  let buttonPayload = "";
-
-  // Correct timestamp extraction from parsed messages array.
-  const rawTimestamp =
-    data.timestamp ||
-    data.ts ||
-    data.requestedAt ||
-    items.find((item) => item.timestamp)?.timestamp ||
-    null;
-
-  for (const item of items) {
-    const parsedButton = parseJSON(item.button);
-
-    if (parsedButton && typeof parsedButton === "object") {
-      buttonText =
-        parsedButton.text ||
-        parsedButton.title ||
-        parsedButton.payload ||
-        "";
-
-      buttonPayload =
-        parsedButton.payload ||
-        parsedButton.id ||
-        "";
-    }
-
-    if (!buttonText && item.interactive?.button_reply) {
-      buttonText =
-        item.interactive.button_reply.title ||
-        item.interactive.button_reply.id ||
-        "";
-
-      buttonPayload =
-        item.interactive.button_reply.id ||
-        "";
-    }
-
-    if (!buttonText && item.button_reply) {
-      buttonText =
-        item.button_reply.title ||
-        item.button_reply.text ||
-        item.button_reply.id ||
-        "";
-
-      buttonPayload =
-        item.button_reply.id ||
-        "";
-    }
-
-    if (!buttonText && item.buttonResponse) {
-      buttonText =
-        item.buttonResponse.text ||
-        item.buttonResponse.title ||
-        item.buttonResponse ||
-        "";
-    }
-
-    if (!buttonText && item.button_text) {
-      buttonText = item.button_text;
-    }
-
-    if (!buttonText && item.buttonText) {
-      buttonText = item.buttonText;
-    }
-
-    if (!buttonText && typeof item.button === "string") {
-      buttonText = item.button;
-    }
-
-    if (buttonText) break;
-  }
-
-  // Root-level button fallback.
-  if (!buttonText) {
-    const rootButton = parseJSON(data.button);
-
-    if (rootButton && typeof rootButton === "object") {
-      buttonText =
-        rootButton.text ||
-        rootButton.title ||
-        rootButton.payload ||
-        "";
-
-      buttonPayload =
-        rootButton.payload ||
-        rootButton.id ||
-        "";
-    } else if (typeof rootButton === "string") {
-      buttonText = rootButton;
-    }
-  }
-
-  return {
-    phone,
-    templateName: String(templateName || ""),
-    templateLanguage: String(templateLanguage || "en"),
-    buttonText: String(buttonText || ""),
-    buttonPayload: String(buttonPayload || ""),
-    rawTimestamp,
-    timestamp: normalizeTimestamp(rawTimestamp),
-    items,
-  };
-}
-
-// =====================================================
-// MSG91 TEMPLATE FETCH
-// =====================================================
-
-async function fetchMSG91Templates() {
-  const response = await axios.get(MSG91_TEMPLATE_URL, {
-    headers: MSG91_HEADERS,
-    params: {
-      plugin: "clevertap",
-      number: TARGET_NUMBER,
-    },
-    timeout: 30000,
-  });
-
-  const responseData = response.data;
-
-  if (Array.isArray(responseData)) {
-    return responseData;
-  }
-
-  if (Array.isArray(responseData?.data)) {
-    return responseData.data;
-  }
-
-  if (Array.isArray(responseData?.data?.data)) {
-    return responseData.data.data;
-  }
-
-  console.error(
-    "Unexpected MSG91 template response:",
-    JSON.stringify(responseData).slice(0, 2000)
-  );
-
-  return [];
-}
-
-async function getMSG91Template(templateName, language) {
-  if (!templateName) {
-    return null;
-  }
-
-  const templates = await fetchMSG91Templates();
-
-  const matchedTemplate = templates.find((template) => {
-    const sameName =
-      String(template.name || "").toLowerCase() ===
-      String(templateName).toLowerCase();
-
-    const templateLanguage =
-      String(template.language || "").toLowerCase();
-
-    const sameLanguage =
-      !language ||
-      !templateLanguage ||
-      templateLanguage === String(language).toLowerCase();
-
-    return sameName && sameLanguage;
-  });
-
-  if (!matchedTemplate) {
-    console.log("MSG91 template not found:", templateName);
-    return null;
-  }
-
-  const components = matchedTemplate.components || [];
-
-  const bodyComponent = components.find(
-    (component) => component.type === "BODY"
-  );
-
-  const headerComponent = components.find(
-    (component) => component.type === "HEADER"
-  );
-
-  const footerComponent = components.find(
-    (component) => component.type === "FOOTER"
-  );
-
-  const buttonsComponent = components.find(
-    (component) => component.type === "BUTTONS"
-  );
-
-  // Template example image, not necessarily the actual campaign image.
-  const headerImage =
-    headerComponent?.example?.header_handle?.[0] || "";
-
-  return {
-    name: matchedTemplate.name || templateName,
-    language: matchedTemplate.language || language || "",
-    category: matchedTemplate.category || "",
-    status: matchedTemplate.status || "",
-    body: bodyComponent?.text || "",
-    headerFormat: headerComponent?.format || "",
-    headerImage,
-    footer: footerComponent?.text || "",
-    buttons: buttonsComponent?.buttons || [],
-  };
-}
-
-// =====================================================
-// HUBSPOT CONTACT SEARCH
-// =====================================================
-
-async function searchHubSpotContact(phone) {
-  const phoneVariants = getPhoneVariants(phone);
-
-  if (!phoneVariants.length) {
-    return null;
-  }
-
-  const filters = phoneVariants.map((number) => ({
-    propertyName: "phone",
-    operator: "EQ",
-    value: number,
-  }));
-
-  const response = await axios.post(
-    `${HUBSPOT_BASE_URL}/crm/v3/objects/contacts/search`,
-    {
-      filterGroups: filters.map((filter) => ({
-        filters: [filter],
-      })),
-      properties: [
-        "firstname",
-        "lastname",
-        "phone",
-        "email",
-        "date_whatsapp",
-        "wa_creative",
-        "profession_category",
-        "custom_offline_sources_trail",
-      ],
-      limit: 1,
-    },
-    {
-      headers: HUBSPOT_HEADERS,
-      timeout: 30000,
-    }
-  );
-
-  return response.data.results?.[0] || null;
-}
-
-// =====================================================
-// HUBSPOT CONTACT CREATE / UPDATE
-// =====================================================
+// --------------------------------------------------
+// TEMPLATE CATEGORY / SOURCE
+// --------------------------------------------------
 
 function getProfession(templateName) {
   const name = String(templateName || "").toLowerCase();
@@ -676,31 +237,410 @@ function getOfflineSource(templateName) {
   return "Data Mining";
 }
 
-async function updateExistingContact(contactId, templateName) {
-  const properties = {
-    date_whatsapp: getHubSpotDateValue(),
-    wa_creative: templateName || "",
-  };
+// --------------------------------------------------
+// MSG91 WEBHOOK PARSING
+// --------------------------------------------------
 
-  const response = await axios.patch(
-    `${HUBSPOT_BASE_URL}/crm/v3/objects/contacts/${contactId}`,
-    { properties },
-    {
-      headers: HUBSPOT_HEADERS,
-      timeout: 30000,
-    }
+function parseWebhookData(body) {
+  let data = body;
+
+  if (typeof data === "string") {
+    data = parseJSON(data, {});
+  }
+
+  if (!data || typeof data !== "object") {
+    data = {};
+  }
+
+  let messages = parseJSON(data.messages, []);
+
+  if (!Array.isArray(messages)) {
+    messages = [];
+  }
+
+  let button = parseJSON(data.button, {});
+
+  if (!button || typeof button !== "object") {
+    button = {};
+  }
+
+  // Sometimes button data is available inside messages.
+  const messageButton = messages.find(
+    (item) => item?.button || item?.interactive
   );
 
-  return response.data;
+  if (
+    (!button.text && !button.payload) &&
+    messageButton?.button
+  ) {
+    button = messageButton.button;
+  }
+
+  if (
+    (!button.text && !button.payload) &&
+    messageButton?.interactive
+  ) {
+    const interactive = messageButton.interactive;
+
+    button = {
+      text:
+        interactive?.button_reply?.title ||
+        interactive?.list_reply?.title ||
+        "",
+      payload:
+        interactive?.button_reply?.id ||
+        interactive?.list_reply?.id ||
+        "",
+    };
+  }
+
+  const firstMessage = messages[0] || {};
+
+  const phone =
+    data.customerNumber ||
+    data.customer_number ||
+    firstMessage.from ||
+    "";
+
+  const templateName =
+    data.templateName ||
+    data.template_name ||
+    "";
+
+  const buttonText =
+    button.text ||
+    button.payload ||
+    data.text ||
+    "";
+
+  const timestamp =
+    firstMessage.timestamp ||
+    data.ts ||
+    data.requestedAt ||
+    "";
+
+  return {
+    raw: data,
+    items: messages,
+    phone: normalizePhone(phone),
+    customerName: getCustomerName(data, messages),
+    templateName: String(templateName).trim(),
+    buttonText: String(buttonText).trim(),
+    buttonPayload: String(button.payload || "").trim(),
+    timestamp,
+  };
 }
 
-// FIXED: Phone number is now sent in +91XXXXXXXXXX format.
-async function createNewContact(phone, templateName) {
+// --------------------------------------------------
+// DEDUPLICATION
+// --------------------------------------------------
+
+function readProcessedEvents() {
+  try {
+    if (!fs.existsSync(PROCESSED_FILE)) {
+      return {};
+    }
+
+    const content = fs.readFileSync(PROCESSED_FILE, "utf8");
+    const parsed = JSON.parse(content);
+
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (error) {
+    logError("Could not read deduplication file", error);
+    return {};
+  }
+}
+
+function writeProcessedEvents(events) {
+  const temporaryFile = PROCESSED_FILE + ".tmp";
+
+  fs.writeFileSync(
+    temporaryFile,
+    JSON.stringify(events, null, 2),
+    "utf8"
+  );
+
+  fs.renameSync(temporaryFile, PROCESSED_FILE);
+}
+
+function cleanOldProcessedEvents(events) {
+  const now = Date.now();
+
+  for (const [key, value] of Object.entries(events)) {
+    const createdAt = Number(value?.updatedAt || value?.createdAt || 0);
+
+    if (
+      !createdAt ||
+      now - createdAt > DEDUPE_RETENTION_MS
+    ) {
+      delete events[key];
+    }
+  }
+
+  return events;
+}
+
+function createButtonEventKey(data, buttonInfo) {
+  const firstMessage = buttonInfo.items?.[0] || {};
+
+  // Use the incoming button message ID first.
+  // replyMsgId is the original outbound message ID, not the
+  // unique incoming button-response ID.
+  const eventId =
+    firstMessage.id ||
+    firstMessage.messageId ||
+    firstMessage.message_id ||
+    data.uuid ||
+    data.messageId ||
+    data.message_id ||
+    data.replyMsgId;
+
+  if (eventId) {
+    return crypto
+      .createHash("sha256")
+      .update("MSG91:" + String(eventId))
+      .digest("hex");
+  }
+
+  const fallback = {
+    phone: buttonInfo.phone,
+    templateName: buttonInfo.templateName,
+    buttonText: buttonInfo.buttonText,
+    timestamp: buttonInfo.timestamp || null,
+    payload: data,
+  };
+
+  return crypto
+    .createHash("sha256")
+    .update(stableStringify(fallback))
+    .digest("hex");
+}
+
+function isDuplicateEvent(eventKey) {
+  const events = cleanOldProcessedEvents(readProcessedEvents());
+  const existing = events[eventKey];
+
+  if (!existing) {
+    return false;
+  }
+
+  if (existing.status === "done") {
+    return true;
+  }
+
+  if (
+    existing.status === "processing" &&
+    Date.now() - Number(existing.updatedAt || 0) <
+      PROCESSING_LEASE_MS
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function markEvent(eventKey, status) {
+  const events = cleanOldProcessedEvents(readProcessedEvents());
+
+  events[eventKey] = {
+    status,
+    createdAt: events[eventKey]?.createdAt || Date.now(),
+    updatedAt: Date.now(),
+  };
+
+  writeProcessedEvents(events);
+}
+
+// --------------------------------------------------
+// MSG91 TEMPLATE FETCH
+// --------------------------------------------------
+
+async function fetchMSG91Template(templateName) {
+  if (!MSG91_AUTHKEY) {
+    throw new Error("MSG91_AUTHKEY is missing in environment variables");
+  }
+
+  logInfo("Fetching MSG91 template", {
+    templateName,
+  });
+
+  const response = await axios.get(MSG91_TEMPLATE_URL, {
+    timeout: 30000,
+    headers: {
+      authkey: MSG91_AUTHKEY,
+      Accept: "application/json",
+    },
+  });
+
+  const root = response.data;
+
+  // Common response format: response.data.data
+  let templates = [];
+
+  if (Array.isArray(root?.data?.data)) {
+    templates = root.data.data;
+  } else if (Array.isArray(root?.data)) {
+    templates = root.data;
+  } else if (Array.isArray(root?.templates)) {
+    templates = root.templates;
+  } else if (Array.isArray(root)) {
+    templates = root;
+  }
+
+  logInfo("MSG91 template API response received", {
+    templateCount: templates.length,
+  });
+
+  const wantedName = String(templateName || "").toLowerCase();
+
+  const matchedTemplate = templates.find(
+    (item) =>
+      String(item?.name || "").toLowerCase() === wantedName
+  );
+
+  if (!matchedTemplate) {
+    logInfo("Template not found in MSG91 API", {
+      requestedTemplate: templateName,
+      availableTemplates: templates
+        .slice(0, 20)
+        .map((item) => item?.name),
+    });
+
+    return null;
+  }
+
+  const components = Array.isArray(matchedTemplate.components)
+    ? matchedTemplate.components
+    : [];
+
+  const bodyComponent = components.find(
+    (item) => item.type === "BODY"
+  );
+
+  const headerComponent = components.find(
+    (item) => item.type === "HEADER"
+  );
+
+  const buttonsComponent = components.find(
+    (item) => item.type === "BUTTONS"
+  );
+
+  const headerImage =
+    headerComponent?.format === "IMAGE"
+      ? headerComponent?.example?.header_handle?.[0] || ""
+      : "";
+
+  const buttons = Array.isArray(buttonsComponent?.buttons)
+    ? buttonsComponent.buttons
+    : [];
+
+  const result = {
+    name: matchedTemplate.name || templateName,
+    language: matchedTemplate.language || "",
+    category: matchedTemplate.category || "",
+    body: bodyComponent?.text || "",
+    headerImage,
+    buttons,
+  };
+
+  logInfo("MSG91 template parsed", {
+    name: result.name,
+    language: result.language,
+    category: result.category,
+    hasBody: Boolean(result.body),
+    hasHeaderImage: Boolean(result.headerImage),
+    buttonCount: result.buttons.length,
+  });
+
+  return result;
+}
+
+// --------------------------------------------------
+// HUBSPOT CONTACT SEARCH
+// --------------------------------------------------
+
+async function findHubSpotContact(phone) {
+  const normalized = normalizePhone(phone);
+
+  if (!normalized) {
+    return null;
+  }
+
+  const phoneVariants = [
+    "+" + normalized,
+    normalized,
+  ];
+
+  for (const phoneValue of phoneVariants) {
+    try {
+      const response = await hubspot.post(
+        "/crm/v3/objects/contacts/search",
+        {
+          filterGroups: [
+            {
+              filters: [
+                {
+                  propertyName: "phone",
+                  operator: "EQ",
+                  value: phoneValue,
+                },
+              ],
+            },
+          ],
+          properties: [
+            "firstname",
+            "lastname",
+            "phone",
+            "email",
+            "wa_creative",
+            "date_whatsapp",
+          ],
+          limit: 1,
+        }
+      );
+
+      if (response.data?.results?.length) {
+        const contact = response.data.results[0];
+
+        logInfo("Existing HubSpot contact found", {
+          contactId: contact.id,
+          phone: maskPhone(phone),
+          existingName: contact.properties?.firstname || "",
+        });
+
+        return contact;
+      }
+    } catch (error) {
+      logError(
+        `HubSpot contact search failed for ${phoneValue}`,
+        error
+      );
+    }
+  }
+
+  logInfo("No existing HubSpot contact found", {
+    phone: maskPhone(phone),
+  });
+
+  return null;
+}
+
+// --------------------------------------------------
+// HUBSPOT CONTACT CREATE
+// --------------------------------------------------
+
+async function createNewContact(phone, customerName, templateName) {
   const normalizedPhone = normalizePhone(phone);
   const hubspotPhone = formatHubSpotPhone(phone);
 
+  if (!normalizedPhone || !hubspotPhone) {
+    throw new Error("Cannot create HubSpot contact: invalid phone number");
+  }
+
+  const finalName = cleanCustomerName(customerName) || "WhatsApp Lead";
+
   const properties = {
-    firstname: normalizedPhone,
+    firstname: finalName,
     phone: hubspotPhone,
     email: `${normalizedPhone}@noemail.com`,
     wa_creative: templateName || "",
@@ -709,50 +649,63 @@ async function createNewContact(phone, templateName) {
     custom_offline_sources_trail: getOfflineSource(templateName),
   };
 
-  console.log("Creating HubSpot contact with phone:", hubspotPhone);
+  logInfo("Creating new HubSpot contact", {
+    customerName: finalName,
+    phone: maskPhone(phone),
+    templateName,
+    profession: properties.profession_category,
+    source: properties.custom_offline_sources_trail,
+  });
 
-  const response = await axios.post(
-    `${HUBSPOT_BASE_URL}/crm/v3/objects/contacts`,
-    { properties },
+  const response = await hubspot.post(
+    "/crm/v3/objects/contacts",
     {
-      headers: HUBSPOT_HEADERS,
-      timeout: 30000,
+      properties,
     }
   );
+
+  logInfo("HubSpot contact created successfully", {
+    contactId: response.data.id,
+    customerName: finalName,
+    phone: maskPhone(phone),
+  });
 
   return response.data;
 }
 
-async function findOrCreateContact(phone, templateName) {
-  const existingContact = await searchHubSpotContact(phone);
+// --------------------------------------------------
+// HUBSPOT EXISTING CONTACT UPDATE
+// --------------------------------------------------
 
-  if (existingContact) {
-    console.log(
-      "Existing HubSpot contact found:",
-      existingContact.id
-    );
+async function updateExistingContact(contactId, templateName) {
+  const properties = {
+    wa_creative: templateName || "",
+    date_whatsapp: getHubSpotDateValue(),
+  };
 
-    await updateExistingContact(
-      existingContact.id,
-      templateName
-    );
+  logInfo("Updating existing HubSpot contact", {
+    contactId,
+    templateName,
+    fields: Object.keys(properties),
+  });
 
-    return existingContact.id;
-  }
-
-  console.log("Creating new HubSpot contact:", phone);
-
-  const newContact = await createNewContact(
-    phone,
-    templateName
+  const response = await hubspot.patch(
+    `/crm/v3/objects/contacts/${contactId}`,
+    {
+      properties,
+    }
   );
 
-  return newContact.id;
+  logInfo("Existing HubSpot contact updated", {
+    contactId,
+  });
+
+  return response.data;
 }
 
-// =====================================================
+// --------------------------------------------------
 // HUBSPOT NOTE HTML
-// =====================================================
+// --------------------------------------------------
 
 function buildNoteHTML(buttonInfo, template) {
   const buttonNames = (template?.buttons || [])
@@ -762,8 +715,10 @@ function buildNoteHTML(buttonInfo, template) {
 
   const imageURL = safeURL(template?.headerImage);
 
+  // Convert newlines into <br> because HubSpot may not preserve
+  // white-space: pre-wrap in note rendering.
   const templateBody = template?.body
-    ? escapeHTML(template.body)
+    ? escapeHTML(template.body).replace(/\r\n|\r|\n/g, "<br>")
     : "Template message not available";
 
   return `
@@ -816,10 +771,11 @@ function buildNoteHTML(buttonInfo, template) {
       <div style="
         font-size: 14px;
         line-height: 1.6;
-        white-space: pre-wrap;
         word-break: break-word;
         margin-bottom: 14px;
-      ">${templateBody}</div>
+      ">
+        ${templateBody}
+      </div>
 
       ${
         imageURL
@@ -877,17 +833,17 @@ function buildNoteHTML(buttonInfo, template) {
   `;
 }
 
-// =====================================================
-// CREATE HUBSPOT NOTE AND ASSOCIATE CONTACT
-// =====================================================
+// --------------------------------------------------
+// HUBSPOT NOTE CREATE + CONTACT ASSOCIATION
+// --------------------------------------------------
 
 async function createHubSpotNote(contactId, buttonInfo, template) {
   const noteBody = buildNoteHTML(buttonInfo, template);
 
-  const payload = {
+  const notePayload = {
     properties: {
       hs_note_body: noteBody,
-      hs_timestamp: new Date(buttonInfo.timestamp).getTime(),
+      hs_timestamp: new Date().toISOString(),
     },
     associations: [
       {
@@ -904,212 +860,208 @@ async function createHubSpotNote(contactId, buttonInfo, template) {
     ],
   };
 
-  const response = await axios.post(
-    `${HUBSPOT_BASE_URL}/crm/v3/objects/notes`,
-    payload,
-    {
-      headers: HUBSPOT_HEADERS,
-      timeout: 30000,
-    }
+  logInfo("Creating HubSpot Note", {
+    contactId,
+    button: buttonInfo.buttonText,
+    template: buttonInfo.templateName,
+    hasTemplateBody: Boolean(template?.body),
+    hasHeaderImage: Boolean(template?.headerImage),
+  });
+
+  const response = await hubspot.post(
+    "/crm/v3/objects/notes",
+    notePayload
   );
+
+  logInfo("HubSpot Note created successfully", {
+    noteId: response.data.id,
+    contactId,
+  });
 
   return response.data;
 }
 
-// =====================================================
-// MAIN WEBHOOK
-// =====================================================
+// --------------------------------------------------
+// MAIN WEBHOOK PROCESS
+// --------------------------------------------------
 
-app.post("/webhook/msg91", async (req, res) => {
-  let eventKey = null;
-  let eventReserved = false;
+async function processWebhook(body) {
+  const buttonInfo = parseWebhookData(body);
+  const data = buttonInfo.raw;
+
+  logInfo("MSG91 webhook received", {
+    customerName: buttonInfo.customerName,
+    phone: maskPhone(buttonInfo.phone),
+    templateName: buttonInfo.templateName,
+    buttonText: buttonInfo.buttonText,
+    integratedNumber: data.integratedNumber || "",
+    messageCount: buttonInfo.items.length,
+    messageId: buttonInfo.items?.[0]?.id || "",
+    webhookType: data.webhookType || "",
+  });
+
+  // Target number validation
+  const integratedNumber = normalizePhone(data.integratedNumber);
+
+  if (integratedNumber && integratedNumber !== TARGET_NUMBER) {
+    logInfo("Webhook ignored: integrated number does not match", {
+      received: maskPhone(integratedNumber),
+      expected: maskPhone(TARGET_NUMBER),
+    });
+
+    return {
+      ignored: true,
+      reason: "Integrated number mismatch",
+    };
+  }
+
+  if (!buttonInfo.phone) {
+    throw new Error("Customer phone number missing in MSG91 payload");
+  }
+
+  if (!buttonInfo.buttonText) {
+    logInfo("No button text found; webhook ignored", {
+      phone: maskPhone(buttonInfo.phone),
+      templateName: buttonInfo.templateName,
+    });
+
+    return {
+      ignored: true,
+      reason: "No button response found",
+    };
+  }
+
+  const eventKey = createButtonEventKey(data, buttonInfo);
+
+  if (processingEvents.has(eventKey) || isDuplicateEvent(eventKey)) {
+    logInfo("Duplicate button event ignored", {
+      eventKey,
+      phone: maskPhone(buttonInfo.phone),
+      button: buttonInfo.buttonText,
+    });
+
+    return {
+      duplicate: true,
+    };
+  }
+
+  processingEvents.add(eventKey);
+  markEvent(eventKey, "processing");
 
   try {
-    const data = req.body || {};
-
-    console.log(
-      "MSG91 Webhook Received:",
-      JSON.stringify(data).slice(0, 5000)
+    // 1. Search existing HubSpot contact.
+    const existingContact = await findHubSpotContact(
+      buttonInfo.phone
     );
 
-    const buttonInfo = extractButtonInfo(data);
+    let contact;
 
-    // -------------------------------------------------
-    // PHONE CHECK
-    // -------------------------------------------------
-
-    if (!buttonInfo.phone) {
-      console.log("Phone number missing.");
-
-      return res.status(200).json({
-        success: true,
-        message: "Phone number missing. Webhook received.",
-      });
-    }
-
-    // -------------------------------------------------
-    // TARGET INTEGRATED NUMBER CHECK
-    // -------------------------------------------------
-
-    const receivedTarget =
-      data.integrated_number ||
-      data.integratedNumber ||
-      data.whatsapp_number ||
-      data.whatsappNumber ||
-      data.number ||
-      "";
-
-    if (
-      receivedTarget &&
-      normalizePhone(receivedTarget) !== normalizePhone(TARGET_NUMBER)
-    ) {
-      console.log(
-        "Webhook received for another integrated number:",
-        receivedTarget
+    // 2. Create new contact or update existing contact.
+    if (existingContact) {
+      contact = await updateExistingContact(
+        existingContact.id,
+        buttonInfo.templateName
       );
-
-      return res.status(200).json({
-        success: true,
-        message: "Different integrated number. Skipped.",
-      });
-    }
-
-    // -------------------------------------------------
-    // CONTACT CREATE / UPDATE
-    // -------------------------------------------------
-
-    const contactId = await findOrCreateContact(
-      buttonInfo.phone,
-      buttonInfo.templateName
-    );
-
-    console.log("HubSpot Contact ID:", contactId);
-
-    // -------------------------------------------------
-    // BUTTON RESPONSE CHECK
-    // -------------------------------------------------
-
-    if (!buttonInfo.buttonText) {
-      console.log(
-        "No button response found. Contact logic completed."
+    } else {
+      contact = await createNewContact(
+        buttonInfo.phone,
+        buttonInfo.customerName,
+        buttonInfo.templateName
       );
-
-      return res.status(200).json({
-        success: true,
-        message: "Contact processed. No button response.",
-        contactId,
-      });
     }
 
-    // -------------------------------------------------
-    // DUPLICATE BUTTON EVENT CHECK
-    // -------------------------------------------------
-
-    eventKey = createButtonEventKey(data, buttonInfo);
-
-    eventReserved = reserveButtonEvent(eventKey);
-
-    if (!eventReserved) {
-      console.log("Duplicate or currently processing button event.");
-
-      return res.status(200).json({
-        success: true,
-        message: "Duplicate Event - Note Skipped",
-        contactId,
-      });
-    }
-
-    // -------------------------------------------------
-    // FETCH TEMPLATE FROM MSG91
-    // -------------------------------------------------
-
+    // 3. Fetch actual approved template definition from MSG91.
     let template = null;
 
-    try {
-      template = await getMSG91Template(
-        buttonInfo.templateName,
-        buttonInfo.templateLanguage
-      );
-    } catch (error) {
-      console.error(
-        "MSG91 template fetch failed:",
-        error.response?.data || error.message
-      );
+    if (buttonInfo.templateName) {
+      try {
+        template = await fetchMSG91Template(
+          buttonInfo.templateName
+        );
+      } catch (error) {
+        logError("MSG91 template fetch failed; Note will be created without template details", error);
+      }
     }
 
-    // -------------------------------------------------
-    // CREATE HUBSPOT NOTE
-    // -------------------------------------------------
-
-    const note = await createHubSpotNote(
-      contactId,
+    // 4. Create one Note for this unique button response.
+    await createHubSpotNote(
+      contact.id,
       buttonInfo,
       template
     );
 
-    console.log("HubSpot Note Created:", note.id);
+    // 5. Mark event completed.
+    markEvent(eventKey, "done");
 
-    // -------------------------------------------------
-    // MARK EVENT COMPLETED
-    // -------------------------------------------------
-
-    completeButtonEvent(eventKey, note.id);
-
-    return res.status(200).json({
-      success: true,
-      message: "WhatsApp button response processed successfully.",
-      contactId,
-      noteId: note.id,
+    logInfo("Webhook processing completed successfully", {
+      contactId: contact.id,
+      customerName: buttonInfo.customerName,
+      phone: maskPhone(buttonInfo.phone),
       templateName: buttonInfo.templateName,
-      buttonText: buttonInfo.buttonText,
+      button: buttonInfo.buttonText,
     });
 
+    return {
+      success: true,
+      contactId: contact.id,
+      customerName: buttonInfo.customerName,
+    };
   } catch (error) {
-    console.error(
-      "Webhook Processing Error:",
-      error.response?.data || error.message
-    );
+    // Remove processing state so MSG91 retry can try again.
+    markEvent(eventKey, "failed");
 
-    if (eventKey && eventReserved) {
-      try {
-        releaseButtonEvent(eventKey);
-      } catch (dedupeError) {
-        console.error(
-          "Dedupe release error:",
-          dedupeError.message
-        );
-      }
-    }
+    logError("Webhook processing failed", error);
 
-    return res.status(500).json({
-      success: false,
-      message: "Webhook processing failed.",
-      error: error.response?.data || error.message,
-    });
+    throw error;
+  } finally {
+    processingEvents.delete(eventKey);
   }
-});
+}
 
-// =====================================================
-// HEALTH CHECK
-// =====================================================
+// --------------------------------------------------
+// EXPRESS ROUTES
+// --------------------------------------------------
 
 app.get("/", (req, res) => {
-  res.status(200).send("MSG91 WhatsApp Webhook Server Running");
+  res.status(200).send("MSG91 WhatsApp to HubSpot webhook is running.");
 });
 
-// =====================================================
+app.post("/webhook/msg91", async (req, res) => {
+  try {
+    logInfo("Incoming request received", {
+      method: req.method,
+      path: req.path,
+      contentType: req.headers["content-type"] || "",
+    });
+
+    const result = await processWebhook(req.body);
+
+    return res.status(200).json({
+      status: "success",
+      message: "Webhook processed",
+      result,
+    });
+  } catch (error) {
+    logError("Webhook route error", error);
+
+    return res.status(500).json({
+      status: "error",
+      message: error.message || "Webhook processing failed",
+    });
+  }
+});
+
+// --------------------------------------------------
 // START SERVER
-// =====================================================
+// --------------------------------------------------
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Webhook URL: /webhook/msg91`);
-
-  if (!HUBSPOT_TOKEN) {
-    console.error("WARNING: HUBSPOT_TOKEN missing in .env");
-  }
-
-  if (!MSG91_AUTHKEY) {
-    console.error("WARNING: MSG91_AUTHKEY missing in .env");
-  }
+  console.log("-------------------------------------------");
+  console.log("MSG91 → HubSpot webhook server is running");
+  console.log("PORT:", PORT);
+  console.log("TARGET NUMBER:", TARGET_NUMBER);
+  console.log("WEBHOOK: /webhook/msg91");
+  console.log("HUBSPOT TOKEN:", HUBSPOT_TOKEN ? "Loaded" : "MISSING");
+  console.log("MSG91 AUTHKEY:", MSG91_AUTHKEY ? "Loaded" : "MISSING");
+  console.log("-------------------------------------------");
 });
