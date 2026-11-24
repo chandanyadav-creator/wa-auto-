@@ -9,6 +9,7 @@ app.use(express.json({ limit: "1mb" }));
 
 const PORT = process.env.PORT || 3000;
 const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN;
+const MSG91_AUTHKEY = process.env.MSG91_AUTHKEY;
 
 // 🎯 Target MSG91 Integrated Number
 const TARGET_NUMBER = "917088000907";
@@ -25,6 +26,21 @@ const hubspot = axios.create({
     headers: {
         Authorization: `Bearer ${HUBSPOT_TOKEN}`,
         "Content-Type": "application/json"
+    }
+});
+
+/* =========================================================
+   🔐 MSG91 API CONFIG
+========================================================= */
+
+const MSG91_TEMPLATE_URL =
+    "https://control.msg91.com/api/v5/whatsapp/get-template-plugins/";
+
+const msg91 = axios.create({
+    timeout: 20000,
+    headers: {
+        authkey: MSG91_AUTHKEY,
+        Accept: "application/json"
     }
 });
 
@@ -269,6 +285,167 @@ function extractButtonResponse(data) {
 
 
 /* =========================================================
+   🧩 MSG91 TEMPLATE FETCH + HTML HELPERS
+========================================================= */
+
+// Escape template text before placing it inside HubSpot Note HTML.
+function escapeHtml(value) {
+    return String(value || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
+
+// Fetch all templates from MSG91, then select
+// only the template whose "name" matches webhook templateName.
+async function getMsg91Template(templateName, integratedNumber) {
+
+    if (!MSG91_AUTHKEY) {
+        console.error("❌ MSG91_AUTHKEY missing in environment variables.");
+        return null;
+    }
+
+    if (!templateName) {
+        return null;
+    }
+
+    try {
+
+        const response = await msg91.get(MSG91_TEMPLATE_URL, {
+            params: {
+                plugin: "clevertap",
+                number: integratedNumber || TARGET_NUMBER
+            }
+        });
+
+        const templates = Array.isArray(response.data?.data)
+            ? response.data.data
+            : [];
+
+        const target = String(templateName).trim().toLowerCase();
+
+        const template = templates.find(item =>
+            String(item?.name || "").trim().toLowerCase() === target
+        );
+
+        if (!template) {
+            console.log(`⚠️ MSG91 template not found: ${templateName}`);
+            return null;
+        }
+
+        const components = Array.isArray(template.components)
+            ? template.components
+            : [];
+
+        const bodyComponent = components.find(
+            item => item?.type === "BODY"
+        );
+
+        const headerComponent = components.find(
+            item => item?.type === "HEADER"
+        );
+
+        const buttonsComponent = components.find(
+            item => item?.type === "BUTTONS"
+        );
+
+        const headerImageUrl =
+            headerComponent?.format === "IMAGE"
+                ? headerComponent?.example?.header_handle?.[0] || ""
+                : "";
+
+        return {
+            name: template.name || templateName,
+            language: template.language || "",
+            category: template.category || "",
+            status: template.status || "",
+            body: bodyComponent?.text || "",
+            headerFormat: headerComponent?.format || "",
+            headerImageUrl,
+            buttons: Array.isArray(buttonsComponent?.buttons)
+                ? buttonsComponent.buttons
+                : []
+        };
+
+    } catch (error) {
+
+        console.error(
+            "❌ MSG91 Template Fetch Error:",
+            error.response?.data || error.message
+        );
+
+        return null;
+    }
+}
+
+
+// Build HubSpot Note HTML with template BODY and HEADER image.
+function buildWhatsAppNoteBody(buttonText, templateName, template) {
+
+    const parts = [];
+
+    parts.push("<strong>WhatsApp Button Response</strong>");
+    parts.push(`Button: ${escapeHtml(buttonText)}`);
+    parts.push(`Template: ${escapeHtml(templateName || "")}`);
+    parts.push("Source: MSG91 WhatsApp");
+
+    // Template BODY
+    if (template?.body) {
+
+        parts.push("<br><strong>WhatsApp Template Message</strong>");
+
+        parts.push(
+            `<div style="white-space:pre-wrap;">${escapeHtml(template.body).replace(/\r?\n/g, "<br>")}</div>`
+        );
+
+    } else {
+
+        parts.push("<br><strong>WhatsApp Template Message</strong>");
+        parts.push("<div>Template body could not be fetched from MSG91.</div>");
+
+    }
+
+    // Template HEADER IMAGE
+    if (template?.headerImageUrl) {
+
+        const safeImageUrl = String(template.headerImageUrl).trim();
+
+        if (/^https:\/\/[^\s"'<>]+$/i.test(safeImageUrl)) {
+
+            parts.push("<br><strong>WhatsApp Template Header Image</strong>");
+
+            parts.push(
+                `<br><img src="${escapeHtml(safeImageUrl)}" alt="WhatsApp template header image" style="max-width:100%;height:auto;">`
+            );
+
+        }
+
+    }
+
+    // Template BUTTONS
+    if (template?.buttons?.length) {
+
+        const buttonNames = template.buttons
+            .map(button => escapeHtml(button?.text || ""))
+            .filter(Boolean);
+
+        if (buttonNames.length) {
+
+            parts.push("<br><strong>Template Buttons</strong>");
+            parts.push(buttonNames.join(" | "));
+
+        }
+
+    }
+
+    return parts.join("<br>");
+}
+
+
+/* =========================================================
    📝 CREATE HUBSPOT TIMELINE ACTIVITY
 ========================================================= */
 
@@ -278,7 +455,9 @@ function extractButtonResponse(data) {
 async function createButtonTimelineActivity(
     contactId,
     buttonText,
-    timestamp
+    timestamp,
+    templateName,
+    template
 ) {
 
     try {
@@ -286,16 +465,18 @@ async function createButtonTimelineActivity(
         const response = await hubspot.post(
             "/crm/v3/objects/notes",
             {
+
                 properties: {
 
                     hs_timestamp:
                         timestamp ||
                         new Date().toISOString(),
 
-                    hs_note_body:
-                        `<strong>WhatsApp Button Response</strong><br>` +
-                        `Button: ${buttonText}<br>` +
-                        `Source: MSG91 WhatsApp`
+                    hs_note_body: buildWhatsAppNoteBody(
+                        buttonText,
+                        templateName,
+                        template
+                    )
 
                 },
 
@@ -669,6 +850,15 @@ app.post(
                 extractButtonResponse(data);
 
 
+            // Fetch template matching webhook templateName.
+            // MSG91 endpoint returns a list; matching is done locally.
+
+            const whatsappTemplate = await getMsg91Template(
+                templateName,
+                integratedNumber
+            );
+
+
             /* =================================================
                📊 PARSED DATA
             ================================================= */
@@ -682,7 +872,14 @@ app.post(
                     integratedNumber,
                     templateName,
                     message,
-                    buttonResponse
+                    buttonResponse,
+                    fetchedTemplate: whatsappTemplate
+                        ? {
+                            name: whatsappTemplate.name,
+                            bodyAvailable: Boolean(whatsappTemplate.body),
+                            imageAvailable: Boolean(whatsappTemplate.headerImageUrl)
+                        }
+                        : null
                 }
             );
 
@@ -889,8 +1086,7 @@ app.post(
                Existing contact me:
 
                1. date_whatsapp update
-               2. wa_creative update with current
-                  templateName
+               2. wa_creative update with current templateName
 
                Baaki properties update nahi hongi.
             ================================================= */
@@ -1031,7 +1227,9 @@ app.post(
                 await createButtonTimelineActivity(
                     hubspotContactId,
                     buttonResponse.text,
-                    buttonResponse.timestamp
+                    buttonResponse.timestamp,
+                    templateName,
+                    whatsappTemplate
                 );
 
             }
@@ -1092,6 +1290,10 @@ app.listen(
 
         console.log(
             "📩 Webhook: /webhook/msg91"
+        );
+
+        console.log(
+            `🔐 MSG91 Authkey: ${MSG91_AUTHKEY ? "Configured" : "MISSING"}`
         );
 
     }
