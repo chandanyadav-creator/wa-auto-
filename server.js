@@ -755,137 +755,126 @@ async function findOrCreateContact(phone, templateName) {
 // =====================================================
 
 function buildNoteHTML(buttonInfo, template) {
-  const sections = [];
+  const buttonNames = (template?.buttons || [])
+    .map((button) => button.text || button.type || "")
+    .filter(Boolean)
+    .join(" | ");
 
-  sections.push(`
-    <div style="font-family:Arial,sans-serif;font-size:13px;color:#333;">
-      <h3 style="margin:0 0 12px 0;">
+  const imageURL = safeURL(template?.headerImage);
+
+  const templateBody = template?.body
+    ? escapeHTML(template.body)
+    : "Template message not available";
+
+  return `
+    <div style="
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 14px;
+      color: #333333;
+      line-height: 1.6;
+    ">
+
+      <h3 style="
+        font-size: 16px;
+        font-weight: 600;
+        margin: 0 0 12px 0;
+        color: #222222;
+      ">
         WhatsApp Button Response
       </h3>
-  `);
 
-  sections.push(`
-    <p>
-      <strong>Customer Number:</strong>
-      ${escapeHTML(buttonInfo.phone)}
-    </p>
-  `);
-
-  sections.push(`
-    <p>
-      <strong>Template Name:</strong>
-      ${escapeHTML(buttonInfo.templateName)}
-    </p>
-  `);
-
-  sections.push(`
-    <p>
-      <strong>Button Clicked:</strong>
-      ${escapeHTML(buttonInfo.buttonText)}
-    </p>
-  `);
-
-  if (buttonInfo.buttonPayload) {
-    sections.push(`
-      <p>
-        <strong>Button Payload:</strong>
-        ${escapeHTML(buttonInfo.buttonPayload)}
+      <p style="margin: 4px 0;">
+        <strong>Button:</strong>
+        ${escapeHTML(buttonInfo.buttonText)}
       </p>
-    `);
-  }
 
-  sections.push(`
-    <p>
-      <strong>Template Language:</strong>
-      ${escapeHTML(template?.language || buttonInfo.templateLanguage)}
-    </p>
-  `);
-
-  if (template?.category) {
-    sections.push(`
-      <p>
-        <strong>Template Category:</strong>
-        ${escapeHTML(template.category)}
+      <p style="margin: 4px 0;">
+        <strong>Template:</strong>
+        ${escapeHTML(buttonInfo.templateName)}
       </p>
-    `);
-  }
 
-  sections.push(`
-    <hr style="border:0;border-top:1px solid #ddd;margin:15px 0;">
-    <h4 style="margin:0 0 8px 0;">WhatsApp Template Message</h4>
-  `);
-
-  if (template?.body) {
-    sections.push(`
-      <div style="white-space:pre-wrap;margin-bottom:12px;">
-        ${escapeHTML(template.body)}
-      </div>
-    `);
-  } else {
-    sections.push(`
-      <p>Template BODY could not be fetched from MSG91.</p>
-    `);
-  }
-
-  if (template?.headerImage) {
-    const imageURL = safeURL(template.headerImage);
-
-    if (imageURL) {
-      sections.push(`
-        <h4 style="margin:12px 0 8px 0;">Header Image</h4>
-
-        <img
-          src="${escapeHTML(imageURL)}"
-          width="250"
-          style="
-            width:250px;
-            max-width:100%;
-            height:auto;
-            display:block;
-            border:0;
-            border-radius:6px;
-          "
-        >
-      `);
-    }
-  }
-
-  if (template?.footer) {
-    sections.push(`
-      <p style="margin-top:12px;">
-        <strong>Footer:</strong>
-        ${escapeHTML(template.footer)}
+      <p style="margin: 4px 0;">
+        <strong>Source:</strong>
+        MSG91 WhatsApp
       </p>
-    `);
-  }
 
-  if (template?.buttons?.length) {
-    sections.push(`
-      <h4 style="margin:12px 0 8px 0;">Template Buttons</h4>
-      <ul style="padding-left:20px;">
-    `);
+      <hr style="
+        border: 0;
+        border-top: 1px solid #dddddd;
+        margin: 14px 0;
+      ">
 
-    for (const button of template.buttons) {
-      sections.push(`
-        <li style="margin-bottom:5px;">
-          ${escapeHTML(button.text || button.type || "Button")}
-        </li>
-      `);
-    }
+      <h4 style="
+        font-size: 14px;
+        font-weight: 600;
+        margin: 0 0 8px 0;
+        color: #222222;
+      ">
+        WhatsApp Template Message
+      </h4>
 
-    sections.push("</ul>");
-  }
+      <div style="
+        font-size: 14px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        word-break: break-word;
+        margin-bottom: 14px;
+      ">${templateBody}</div>
 
-  sections.push(`
-      <hr style="border:0;border-top:1px solid #ddd;margin:15px 0;">
-      <p style="font-size:11px;color:#777;">
-        WhatsApp response received at:
-        ${escapeHTML(buttonInfo.timestamp)}
-      </p>
+      ${
+        imageURL
+          ? `
+            <h4 style="
+              font-size: 14px;
+              font-weight: 600;
+              margin: 12px 0 8px 0;
+              color: #222222;
+            ">
+              WhatsApp Template Header Image
+            </h4>
+
+            <img
+              src="${escapeHTML(imageURL)}"
+              width="250"
+              style="
+                width: 250px;
+                max-width: 100%;
+                height: auto;
+                display: block;
+                border: 0;
+                border-radius: 5px;
+                margin-bottom: 14px;
+              "
+            >
+          `
+          : ""
+      }
+
+      ${
+        buttonNames
+          ? `
+            <h4 style="
+              font-size: 14px;
+              font-weight: 600;
+              margin: 12px 0 6px 0;
+              color: #222222;
+            ">
+              Template Buttons
+            </h4>
+
+            <p style="
+              margin: 0;
+              font-size: 13px;
+              line-height: 1.6;
+            ">
+              ${escapeHTML(buttonNames)}
+            </p>
+          `
+          : ""
+      }
+
     </div>
-  `);
-
-  return sections.join("");
+  `;
 }
 
 // =====================================================
