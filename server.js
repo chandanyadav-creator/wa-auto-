@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const express = require("express");
@@ -177,6 +176,171 @@ function extractMessage(messageData) {
 
 
 /* =========================================================
+   🔘 EXTRACT WHATSAPP BUTTON RESPONSE
+========================================================= */
+
+function extractButtonResponse(data) {
+
+    const parseJson = (value) => {
+
+        if (typeof value !== "string") {
+            return value;
+        }
+
+        try {
+            return JSON.parse(value);
+        } catch {
+            return null;
+        }
+
+    };
+
+    const messages = parseJson(data?.messages);
+
+    const messageList = Array.isArray(messages)
+        ? messages
+        : (messages ? [messages] : []);
+
+    // MSG91 may also send button directly at root
+    const rootButton = parseJson(data?.button);
+
+    for (const item of messageList) {
+
+        if (item?.type === "button" || item?.button) {
+
+            const button =
+                parseJson(item.button) ||
+                item.button ||
+                {};
+
+            const text = String(
+                button?.text ||
+                button?.payload ||
+                ""
+            ).trim();
+
+            if (text) {
+
+                const rawTimestamp = item?.timestamp;
+
+                const timestamp = rawTimestamp
+                    ? new Date(
+                        Number(rawTimestamp) * 1000
+                    ).toISOString()
+                    : new Date().toISOString();
+
+                return {
+                    text,
+                    timestamp
+                };
+
+            }
+
+        }
+
+    }
+
+    // Root-level button fallback
+    if (rootButton) {
+
+        const button =
+            rootButton.button ||
+            rootButton;
+
+        const text = String(
+            button?.text ||
+            button?.payload ||
+            ""
+        ).trim();
+
+        if (text) {
+
+            return {
+                text,
+                timestamp: new Date().toISOString()
+            };
+
+        }
+
+    }
+
+    return null;
+}
+
+
+/* =========================================================
+   📝 CREATE HUBSPOT TIMELINE ACTIVITY
+========================================================= */
+
+// Creates a separate Note associated with the contact.
+// Note appears in HubSpot contact timeline.
+
+async function createButtonTimelineActivity(
+    contactId,
+    buttonText,
+    timestamp
+) {
+
+    try {
+
+        const response = await hubspot.post(
+            "/crm/v3/objects/notes",
+            {
+                properties: {
+
+                    hs_timestamp:
+                        timestamp ||
+                        new Date().toISOString(),
+
+                    hs_note_body:
+                        `<strong>WhatsApp Button Response</strong><br>` +
+                        `Button: ${buttonText}<br>` +
+                        `Source: MSG91 WhatsApp`
+
+                },
+
+                associations: [
+
+                    {
+                        to: {
+                            id: String(contactId)
+                        },
+
+                        types: [
+                            {
+                                associationCategory:
+                                    "HUBSPOT_DEFINED",
+
+                                associationTypeId: 202
+                            }
+                        ]
+                    }
+
+                ]
+            }
+        );
+
+        console.log(
+            "✅ WhatsApp button response added to HubSpot timeline:",
+            response.data.id
+        );
+
+        return response.data;
+
+    } catch (error) {
+
+        console.error(
+            "❌ HubSpot Timeline Activity Error:",
+            error.response?.data ||
+            error.message
+        );
+
+        return null;
+    }
+}
+
+
+/* =========================================================
    📞 EXTRACT CUSTOMER NUMBER
 ========================================================= */
 
@@ -214,7 +378,9 @@ function extractCustomerNumber(data) {
                         ).trim();
 
                     }
+
                 }
+
             }
 
         } catch (error) {
@@ -225,6 +391,7 @@ function extractCustomerNumber(data) {
             );
 
         }
+
     }
 
     return "";
@@ -284,6 +451,7 @@ async function findContact(phone) {
                 await hubspot.post(
                     "/crm/v3/objects/contacts/search",
                     {
+
                         filterGroups: [
                             {
                                 filters: [
@@ -295,7 +463,9 @@ async function findContact(phone) {
                                 ]
                             }
                         ],
+
                         limit: 1
+
                     }
                 );
 
@@ -321,6 +491,7 @@ async function findContact(phone) {
 
             // Continue with next variant
         }
+
     }
 
     console.log(
@@ -455,6 +626,7 @@ app.post(
 
             // customerNumber empty ho to
             // messages[].from se number lega
+
             const rawPhone =
                 extractCustomerNumber(data);
 
@@ -471,6 +643,7 @@ app.post(
 
 
             // Template name
+
             const templateName =
                 String(
                     data.templateName ||
@@ -490,6 +663,12 @@ app.post(
                 );
 
 
+            // 🔘 WhatsApp interactive button response
+
+            const buttonResponse =
+                extractButtonResponse(data);
+
+
             /* =================================================
                📊 PARSED DATA
             ================================================= */
@@ -502,7 +681,8 @@ app.post(
                     phone,
                     integratedNumber,
                     templateName,
-                    message
+                    message,
+                    buttonResponse
                 }
             );
 
@@ -660,20 +840,24 @@ app.post(
                 email:
                     `${phone}@noemail.com`,
 
-                // 🔥 Template name
+                // Template name
                 // Existing/New contact dono me
+
                 wa_creative:
                     templateName,
 
                 // WhatsApp date
+
                 date_whatsapp:
                     currentDateIndia,
 
                 // Profession
+
                 profession_category:
                     professionCategory,
 
                 // Offline Source
+
                 custom_offline_sources_trail:
                     offlineSource
 
@@ -694,6 +878,11 @@ app.post(
                 await findContact(phone);
 
 
+            // Keep HubSpot contact ID for timeline activity
+
+            let hubspotContactId = null;
+
+
             /* =================================================
                🔄 EXISTING CONTACT
 
@@ -708,13 +897,19 @@ app.post(
 
             if (existingContact) {
 
+                hubspotContactId =
+                    existingContact.id;
+
+
                 console.log(
                     `🔄 Existing contact found: ${existingContact.id}`
                 );
 
+
                 console.log(
                     `📅 Updating date_whatsapp: ${currentDateIndia}`
                 );
+
 
                 console.log(
                     `📝 Updating wa_creative/template: ${templateName}`
@@ -725,11 +920,13 @@ app.post(
                     await updateContact(
                         existingContact.id,
                         {
+
                             date_whatsapp:
                                 currentDateIndia,
 
                             wa_creative:
                                 templateName
+
                         }
                     );
 
@@ -748,9 +945,11 @@ app.post(
                     "✅ Existing contact updated successfully."
                 );
 
+
                 console.log(
                     "   • date_whatsapp updated"
                 );
+
 
                 console.log(
                     "   • wa_creative/template updated"
@@ -778,6 +977,7 @@ app.post(
                     "🆕 Contact not found. Creating..."
                 );
 
+
                 console.log(
                     `📦 New Contact Offline Source: ${offlineSource}`
                 );
@@ -799,8 +999,39 @@ app.post(
                 }
 
 
+                hubspotContactId =
+                    created.id;
+
+
                 console.log(
                     "✅ New contact created successfully."
+                );
+
+            }
+
+
+            /* =================================================
+               🔘 WHATSAPP BUTTON RESPONSE
+               → HUBSPOT TIMELINE
+            ================================================= */
+
+            if (
+                buttonResponse?.text &&
+                hubspotContactId
+            ) {
+
+                console.log(
+                    `🔘 Button response received: ${buttonResponse.text}`
+                );
+
+
+                // Separate Note for every click.
+                // Previous contact properties remain unchanged.
+
+                await createButtonTimelineActivity(
+                    hubspotContactId,
+                    buttonResponse.text,
+                    buttonResponse.timestamp
                 );
 
             }
