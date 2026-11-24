@@ -47,8 +47,6 @@ const DEDUPE_FILE = path.join(
 const DEDUPE_RETENTION_DAYS = 7;
 const PROCESSING_LOCK_MS = 5 * 60 * 1000;
 
-// In-process lock. This implementation is intended for one
-// running Node.js server instance.
 const processingEvents = new Set();
 
 // =====================================================
@@ -70,15 +68,22 @@ function normalizePhone(phone) {
 
   let number = String(phone).replace(/\D/g, "");
 
-  if (number.length === 10) {
-    number = "91" + number;
-  }
-
   if (number.startsWith("0")) {
     number = number.substring(1);
   }
 
+  if (number.length === 10) {
+    number = "91" + number;
+  }
+
   return number;
+}
+
+// HubSpot E.164 phone format
+function formatHubSpotPhone(phone) {
+  const number = normalizePhone(phone);
+
+  return number ? "+" + number : "";
 }
 
 function getPhoneVariants(phone) {
@@ -92,13 +97,10 @@ function getPhoneVariants(phone) {
   ]);
 
   if (number.startsWith("91") && number.length === 12) {
-    variants.add(number.substring(2));
-    variants.add("+91" + number.substring(2));
-  }
+    const withoutCountryCode = number.substring(2);
 
-  if (number.length === 10) {
-    variants.add("91" + number);
-    variants.add("+91" + number);
+    variants.add(withoutCountryCode);
+    variants.add("+91" + withoutCountryCode);
   }
 
   return [...variants];
@@ -140,7 +142,6 @@ function normalizeTimestamp(value) {
   if (/^\d+$/.test(String(value))) {
     let timestamp = Number(value);
 
-    // Convert Unix seconds to milliseconds.
     if (timestamp < 100000000000) {
       timestamp *= 1000;
     }
@@ -235,20 +236,27 @@ function stableStringify(value) {
   return JSON.stringify(value);
 }
 
+// =====================================================
+// UNIQUE BUTTON EVENT KEY
+// =====================================================
+
 function createButtonEventKey(data, buttonInfo) {
+  // IMPORTANT:
+  // MSG91 sends messages as a JSON STRING.
+  // We use the parsed messages[0].id from buttonInfo.items.
+
+  const firstMessage = buttonInfo.items?.[0] || {};
+
   const eventId =
-    data.replyMsgId ||
-    data.reply_msg_id ||
+    firstMessage.id ||
+    firstMessage.messageId ||
+    firstMessage.message_id ||
+    data.uuid ||
     data.messageId ||
     data.message_id ||
-    data.wamid ||
-    data.messages?.[0]?.id ||
-    data.messages?.[0]?.messageId ||
-    data.messages?.[0]?.message_id ||
-    data.data?.replyMsgId ||
-    data.data?.messageId;
+    data.replyMsgId;
 
-  // Prefer a stable unique message/event ID.
+  // Prefer actual incoming button message ID.
   if (eventId) {
     return crypto
       .createHash("sha256")
@@ -256,8 +264,7 @@ function createButtonEventKey(data, buttonInfo) {
       .digest("hex");
   }
 
-  // Fallback: identical webhook payloads generate the same key.
-  // A genuine stable event ID is more reliable.
+  // Fallback for payloads without a unique message ID.
   const fallback = {
     phone: buttonInfo.phone,
     templateName: buttonInfo.templateName,
@@ -347,7 +354,7 @@ function getMessageItems(data) {
     return [messages];
   }
 
-  let nestedData = parseJSON(data.data);
+  const nestedData = parseJSON(data.data);
 
   if (Array.isArray(nestedData)) {
     return nestedData;
@@ -395,22 +402,16 @@ function extractButtonInfo(data) {
 
   let buttonText = "";
   let buttonPayload = "";
-  let rawTimestamp =
+
+  // Correct timestamp extraction from parsed messages array.
+  const rawTimestamp =
     data.timestamp ||
-    data.date ||
-    data.createdAt ||
-    data.messages?.[0]?.timestamp ||
+    data.ts ||
+    data.requestedAt ||
+    items.find((item) => item.timestamp)?.timestamp ||
     null;
 
   for (const item of items) {
-    if (!rawTimestamp) {
-      rawTimestamp =
-        item.timestamp ||
-        item.date ||
-        item.createdAt ||
-        null;
-    }
-
     const parsedButton = parseJSON(item.button);
 
     if (parsedButton && typeof parsedButton === "object") {
@@ -586,9 +587,7 @@ async function getMSG91Template(templateName, language) {
     (component) => component.type === "BUTTONS"
   );
 
-  // IMPORTANT:
-  // header_handle is the template example/sample image.
-  // It may not be the actual image sent in a daily campaign.
+  // Template example image, not necessarily the actual campaign image.
   const headerImage =
     headerComponent?.example?.header_handle?.[0] || "";
 
@@ -695,18 +694,22 @@ async function updateExistingContact(contactId, templateName) {
   return response.data;
 }
 
+// FIXED: Phone number is now sent in +91XXXXXXXXXX format.
 async function createNewContact(phone, templateName) {
   const normalizedPhone = normalizePhone(phone);
+  const hubspotPhone = formatHubSpotPhone(phone);
 
   const properties = {
     firstname: normalizedPhone,
-    phone: normalizedPhone,
+    phone: hubspotPhone,
     email: `${normalizedPhone}@noemail.com`,
     wa_creative: templateName || "",
     date_whatsapp: getHubSpotDateValue(),
     profession_category: getProfession(templateName),
     custom_offline_sources_trail: getOfflineSource(templateName),
   };
+
+  console.log("Creating HubSpot contact with phone:", hubspotPhone);
 
   const response = await axios.post(
     `${HUBSPOT_BASE_URL}/crm/v3/objects/contacts`,
@@ -943,7 +946,7 @@ app.post("/webhook/msg91", async (req, res) => {
     const buttonInfo = extractButtonInfo(data);
 
     // -------------------------------------------------
-    // CHECK PHONE
+    // PHONE CHECK
     // -------------------------------------------------
 
     if (!buttonInfo.phone) {
@@ -956,7 +959,7 @@ app.post("/webhook/msg91", async (req, res) => {
     }
 
     // -------------------------------------------------
-    // TARGET NUMBER CHECK
+    // TARGET INTEGRATED NUMBER CHECK
     // -------------------------------------------------
 
     const receivedTarget =
@@ -971,7 +974,10 @@ app.post("/webhook/msg91", async (req, res) => {
       receivedTarget &&
       normalizePhone(receivedTarget) !== normalizePhone(TARGET_NUMBER)
     ) {
-      console.log("Webhook received for another integrated number.");
+      console.log(
+        "Webhook received for another integrated number:",
+        receivedTarget
+      );
 
       return res.status(200).json({
         success: true,
@@ -1025,7 +1031,7 @@ app.post("/webhook/msg91", async (req, res) => {
     }
 
     // -------------------------------------------------
-    // FETCH ACTUAL TEMPLATE DEFINITION FROM MSG91
+    // FETCH TEMPLATE FROM MSG91
     // -------------------------------------------------
 
     let template = null;
@@ -1055,7 +1061,7 @@ app.post("/webhook/msg91", async (req, res) => {
     console.log("HubSpot Note Created:", note.id);
 
     // -------------------------------------------------
-    // MARK EVENT AS COMPLETED
+    // MARK EVENT COMPLETED
     // -------------------------------------------------
 
     completeButtonEvent(eventKey, note.id);
