@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const express = require("express");
@@ -9,19 +8,20 @@ app.use(express.json({ limit: "2mb" }));
 
 // =====================================================
 // CONFIGURATION
+// Render Environment Variables:
+// HUBSPOT_TOKEN
+// MSG91_AUTHKEY
 // =====================================================
 
 const PORT = process.env.PORT || 3000;
 const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN;
-
 const MSG91_AUTHKEY = process.env.MSG91_AUTHKEY;
-const MSG91_TEMPLATE_URL = process.env.MSG91_TEMPLATE_URL;
-const MSG91_TEMPLATE_METHOD = (
-    process.env.MSG91_TEMPLATE_METHOD || "GET"
-).toUpperCase();
 
 const TARGET_NUMBER = "917088000907";
 const HUBSPOT_BASE_URL = "https://api.hubapi.com";
+
+const MSG91_TEMPLATE_URL =
+    "https://control.msg91.com/api/v5/whatsapp/get-template-plugins/";
 
 const hubspot = axios.create({
     baseURL: HUBSPOT_BASE_URL,
@@ -32,15 +32,21 @@ const hubspot = axios.create({
     }
 });
 
+const msg91 = axios.create({
+    timeout: 20000,
+    headers: {
+        authkey: MSG91_AUTHKEY,
+        Accept: "application/json",
+        "Content-Type": "application/json"
+    }
+});
+
 // =====================================================
 // LOGGING
 // =====================================================
 
 function log(title, data = null) {
-    console.log(
-        `\n[${new Date().toISOString()}] ${title}`
-    );
-
+    console.log(`\n[${new Date().toISOString()}] ${title}`);
     if (data !== null) {
         try {
             console.log(JSON.stringify(data, null, 2));
@@ -52,27 +58,16 @@ function log(title, data = null) {
 
 function logError(title, error) {
     console.error(`\n❌ ${title}`);
-
-    console.error(
-        "Status:",
-        error.response?.status || "N/A"
-    );
-
+    console.error("Status:", error.response?.status || "N/A");
     console.error(
         "Response:",
-        JSON.stringify(
-            error.response?.data || error.message,
-            null,
-            2
-        )
+        JSON.stringify(error.response?.data || error.message, null, 2)
     );
 }
 
 function maskPhone(phone = "") {
     const clean = String(phone).replace(/\D/g, "");
-    return clean.length > 4
-        ? "******" + clean.slice(-4)
-        : "****";
+    return clean.length > 4 ? "******" + clean.slice(-4) : "****";
 }
 
 // =====================================================
@@ -90,29 +85,29 @@ function getCurrentDateIndia() {
 
 // =====================================================
 // PHONE FORMATTING
+// EXACTLY 4 FORMATS
 // =====================================================
 
 function formatPhone(phone) {
     if (!phone) return "";
 
     const clean = String(phone).replace(/\D/g, "");
-
     if (!clean) return "";
 
-    if (clean.length === 10) {
-        return `+91${clean}`;
+    if (clean.startsWith("0091") && clean.length === 14) {
+        return `+${clean.substring(2)}`;
     }
 
-    if (clean.length === 12 && clean.startsWith("91")) {
+    if (clean.startsWith("91") && clean.length === 12) {
         return `+${clean}`;
     }
 
-    if (clean.length === 11 && clean.startsWith("0")) {
+    if (clean.startsWith("0") && clean.length === 11) {
         return `+91${clean.substring(1)}`;
     }
 
-    if (String(phone).trim().startsWith("+")) {
-        return `+${clean}`;
+    if (clean.length === 10) {
+        return `+91${clean}`;
     }
 
     return `+${clean}`;
@@ -120,10 +115,9 @@ function formatPhone(phone) {
 
 function generatePhoneVariants(phone) {
     const clean = String(phone || "").replace(/\D/g, "");
-
     let local = clean;
 
-    if (clean.startsWith("0091")) {
+    if (clean.startsWith("0091") && clean.length === 14) {
         local = clean.substring(4);
     } else if (clean.startsWith("91") && clean.length === 12) {
         local = clean.substring(2);
@@ -137,10 +131,7 @@ function generatePhoneVariants(phone) {
         local,
         `91${local}`,
         `+91${local}`,
-        `0${local}`,
-        `0091${local}`,
-        `+91 ${local}`,
-        `91 ${local}`
+        `0${local}`
     ])];
 }
 
@@ -151,7 +142,7 @@ function generatePhoneVariants(phone) {
 function findDeepValue(obj, keys) {
     if (!obj || typeof obj !== "object") return undefined;
 
-    const wanted = keys.map(k => k.toLowerCase());
+    const wanted = keys.map(key => key.toLowerCase());
 
     for (const [key, value] of Object.entries(obj)) {
         if (
@@ -177,7 +168,7 @@ function findDeepValue(obj, keys) {
 function findAllDeepValues(obj, keys, output = []) {
     if (!obj || typeof obj !== "object") return output;
 
-    const wanted = keys.map(k => k.toLowerCase());
+    const wanted = keys.map(key => key.toLowerCase());
 
     for (const [key, value] of Object.entries(obj)) {
         if (
@@ -208,9 +199,7 @@ function extractCustomerNumber(data) {
         data?.mobile ||
         data?.phone;
 
-    if (directNumber) {
-        return String(directNumber).trim();
-    }
+    if (directNumber) return String(directNumber).trim();
 
     let messages = data?.messages;
 
@@ -221,9 +210,7 @@ function extractCustomerNumber(data) {
 
         if (Array.isArray(messages)) {
             for (const item of messages) {
-                if (item?.from) {
-                    return String(item.from).trim();
-                }
+                if (item?.from) return String(item.from).trim();
             }
         }
     } catch (error) {
@@ -242,8 +229,7 @@ function extractMessage(messageData) {
 
     if (typeof messageData === "string") {
         try {
-            const parsed = JSON.parse(messageData);
-            return extractMessage(parsed);
+            return extractMessage(JSON.parse(messageData));
         } catch {
             return messageData.trim();
         }
@@ -281,7 +267,6 @@ function extractMessage(messageData) {
 
 function parseWebhook(data) {
     const rawPhone = extractCustomerNumber(data);
-
     const phone = formatPhone(rawPhone);
 
     const name = String(
@@ -303,13 +288,15 @@ function parseWebhook(data) {
         ""
     ).trim();
 
-    let rawMessage =
+    const rawMessage =
         data?.messages ||
         data?.text ||
         data?.message ||
         "";
 
-    const message = String(extractMessage(rawMessage) || "").trim();
+    const message = String(
+        extractMessage(rawMessage) || ""
+    ).trim();
 
     const direction = String(
         findDeepValue(data, [
@@ -377,9 +364,7 @@ function isStopMessage(data) {
     }
 
     return matched;
-}
-
-// =====================================================
+}// =====================================================
 // MSG91 TEMPLATE FETCH
 // =====================================================
 
@@ -395,15 +380,9 @@ function extractTemplateList(responseData) {
         if (Array.isArray(item)) return item;
     }
 
-    // API may return one template object directly.
-    if (
-        responseData?.data?.components ||
-        responseData?.components
-    ) {
+    if (responseData?.data?.components || responseData?.components) {
         return [
-            responseData.data?.components
-                ? responseData.data
-                : responseData
+            responseData.data?.components ? responseData.data : responseData
         ];
     }
 
@@ -413,42 +392,36 @@ function extractTemplateList(responseData) {
 async function fetchMSG91Template(templateName) {
     log("========== MSG91 TEMPLATE FETCH STARTED ==========");
 
-    if (!MSG91_AUTHKEY || !MSG91_TEMPLATE_URL) {
-        throw new Error(
-            "MSG91_AUTHKEY or MSG91_TEMPLATE_URL is missing in Render"
-        );
+    if (!MSG91_AUTHKEY) {
+        log("⚠️ MSG91_AUTHKEY missing. Template details unavailable.");
+
+        return {
+            name: templateName,
+            language: "",
+            category: "",
+            status: "",
+            body: "",
+            header: null,
+            footer: "",
+            buttons: [],
+            fetchStatus: "AUTHKEY_MISSING"
+        };
     }
 
-    log("Template fetch request", {
-        templateName,
-        integratedNumber: TARGET_NUMBER,
-        method: MSG91_TEMPLATE_METHOD,
-        endpoint: MSG91_TEMPLATE_URL
-    });
-
     try {
-        const config = {
-            method: MSG91_TEMPLATE_METHOD,
-            url: MSG91_TEMPLATE_URL,
-            headers: {
-                authkey: MSG91_AUTHKEY,
-                Accept: "application/json",
-                "Content-Type": "application/json"
-            },
-            timeout: 20000
-        };
+        log("MSG91 template fetch request", {
+            templateName,
+            integratedNumber: TARGET_NUMBER,
+            endpoint: MSG91_TEMPLATE_URL,
+            method: "GET"
+        });
 
-        if (MSG91_TEMPLATE_METHOD === "GET") {
-            config.params = {
-                integrated_number: TARGET_NUMBER
-            };
-        } else {
-            config.data = {
-                integrated_number: TARGET_NUMBER
-            };
-        }
-
-        const response = await axios(config);
+        const response = await msg91.get(MSG91_TEMPLATE_URL, {
+            params: {
+                plugin: "clevertap",
+                number: TARGET_NUMBER
+            }
+        });
 
         log("MSG91 template API response status", response.status);
 
@@ -458,21 +431,29 @@ async function fetchMSG91Template(templateName) {
             count: templates.length
         });
 
+        const targetName = String(templateName || "")
+            .trim()
+            .toLowerCase();
+
         const matched = templates.find(item => {
             const currentName =
                 item?.name ||
                 item?.template_name ||
                 item?.templateName;
 
-            return String(currentName || "").toLowerCase() ===
-                templateName.toLowerCase();
+            return String(currentName || "")
+                .trim()
+                .toLowerCase() === targetName;
         });
 
         if (!matched) {
             log("⚠️ Matching template not found in MSG91 response", {
                 requestedTemplate: templateName,
                 availableTemplates: templates.map(item =>
-                    item?.name || item?.template_name || ""
+                    item?.name ||
+                    item?.template_name ||
+                    item?.templateName ||
+                    ""
                 )
             });
 
@@ -483,32 +464,34 @@ async function fetchMSG91Template(templateName) {
                 status: "",
                 body: "",
                 header: null,
+                footer: "",
                 buttons: [],
-                raw: null,
                 fetchStatus: "NOT_FOUND"
             };
         }
 
-        const components = matched.components || [];
+        const components = Array.isArray(matched.components)
+            ? matched.components
+            : [];
 
         const bodyComponent = components.find(
-            item => item.type === "BODY"
+            item => item?.type === "BODY"
         );
 
         const headerComponent = components.find(
-            item => item.type === "HEADER"
+            item => item?.type === "HEADER"
         );
 
         const footerComponent = components.find(
-            item => item.type === "FOOTER"
+            item => item?.type === "FOOTER"
         );
 
         const buttonComponent = components.find(
-            item => item.type === "BUTTONS"
+            item => item?.type === "BUTTONS"
         );
 
         const details = {
-            name: matched.name || templateName,
+            name: matched.name || matched.template_name || templateName,
             language: matched.language || matched.language_code || "",
             category: matched.category || "",
             status: matched.status || "",
@@ -516,7 +499,6 @@ async function fetchMSG91Template(templateName) {
             header: headerComponent || null,
             footer: footerComponent?.text || "",
             buttons: buttonComponent?.buttons || [],
-            raw: matched,
             fetchStatus: "FOUND"
         };
 
@@ -535,12 +517,68 @@ async function fetchMSG91Template(templateName) {
 
     } catch (error) {
         logError("MSG91 TEMPLATE FETCH FAILED", error);
-        throw error;
+
+        return {
+            name: templateName,
+            language: "",
+            category: "",
+            status: "",
+            body: "",
+            header: null,
+            footer: "",
+            buttons: [],
+            fetchStatus: "FETCH_FAILED"
+        };
+    }
+}
+
+// =====================================================
+// HUBSPOT API RETRY FOR RATE LIMIT (429)
+// =====================================================
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function hubspotRequestWithRetry(requestConfig, maxRetries = 4) {
+    let attempt = 0;
+
+    while (true) {
+        try {
+            return await hubspot.request(requestConfig);
+
+        } catch (error) {
+            const status = error.response?.status;
+
+            if (status !== 429 || attempt >= maxRetries) {
+                throw error;
+            }
+
+            const retryAfterHeader = Number(
+                error.response?.headers?.["retry-after"] || 0
+            );
+
+            const waitMs = retryAfterHeader > 0
+                ? retryAfterHeader * 1000
+                : Math.min(1000 * (2 ** attempt), 10000);
+
+            log("⏳ HubSpot rate limit reached. Retrying.", {
+                attempt: attempt + 1,
+                maxRetries,
+                waitMs
+            });
+
+            await sleep(waitMs);
+            attempt++;
+        }
     }
 }
 
 // =====================================================
 // HUBSPOT CONTACT SEARCH
+// ONLY "phone" PROPERTY
+// Four formats checked in ONE API request.
+// mobilephone is NOT searched.
 // =====================================================
 
 async function findContact(phone) {
@@ -548,87 +586,62 @@ async function findContact(phone) {
 
     log("========== HUBSPOT CONTACT SEARCH ==========", {
         phone: maskPhone(phone),
-        variants: variants.map(maskPhone)
+        property: "phone",
+        variants: variants.map(maskPhone),
+        variantCount: variants.length
     });
 
     if (!variants.length) {
         throw new Error("No valid phone variants");
     }
 
-    const found = new Map();
-
-    for (const propertyName of ["phone", "mobilephone"]) {
-        for (const variant of variants) {
-            log("Searching HubSpot", {
-                property: propertyName,
-                value: maskPhone(variant)
-            });
-
-            try {
-                const response = await hubspot.post(
-                    "/crm/v3/objects/contacts/search",
-                    {
-                        filterGroups: [
-                            {
-                                filters: [
-                                    {
-                                        propertyName,
-                                        operator: "EQ",
-                                        value: variant
-                                    }
-                                ]
-                            }
-                        ],
-                        properties: [
-                            "firstname",
-                            "lastname",
-                            "phone",
-                            "mobilephone",
-                            "email",
-                            "date_whatsapp",
-                            "wa_creative"
-                        ],
-                        limit: 100
-                    }
-                );
-
-                const results = response.data?.results || [];
-
-                log("HubSpot search result", {
-                    property: propertyName,
-                    variant: maskPhone(variant),
-                    resultCount: results.length
-                });
-
-                results.forEach(contact => {
-                    found.set(String(contact.id), contact);
-                });
-
-            } catch (error) {
-                logError(
-                    `HubSpot search failed: ${propertyName}`,
-                    error
-                );
-
-                // Stop processing if search fails.
-                // Never create a new contact after a failed search.
-                throw error;
+    const filterGroups = variants.map(variant => ({
+        filters: [
+            {
+                propertyName: "phone",
+                operator: "EQ",
+                value: variant
             }
-        }
-    }
+        ]
+    }));
 
-    const contacts = [...found.values()];
-
-    log("HubSpot contact search completed", {
-        matchingContacts: contacts.length,
-        contactIds: contacts.map(item => item.id)
+    log("HubSpot search request prepared", {
+        property: "phone",
+        OR_variant_count: filterGroups.length,
+        mobilephone_search: false
     });
 
-    if (contacts.length > 1) {
-        log("⚠️ Multiple matching contacts found. No merge performed.");
+    const response = await hubspotRequestWithRetry({
+        method: "POST",
+        url: "/crm/v3/objects/contacts/search",
+        data: {
+            filterGroups,
+            properties: [
+                "firstname",
+                "lastname",
+                "phone",
+                "email",
+                "date_whatsapp",
+                "wa_creative"
+            ],
+            limit: 100
+        }
+    });
+
+    const results = response.data?.results || [];
+
+    log("HubSpot contact search result", {
+        resultCount: results.length,
+        contactIds: results.map(contact => contact.id)
+    });
+
+    if (results.length > 1) {
+        log(
+            "⚠️ Multiple matching contacts found. Using first result; no merge performed."
+        );
     }
 
-    return contacts[0] || null;
+    return results[0] || null;
 }
 
 // =====================================================
@@ -637,15 +650,17 @@ async function findContact(phone) {
 
 async function createContact(properties) {
     log("========== CREATING NEW HUBSPOT CONTACT ==========");
+
     log("New contact properties", {
         ...properties,
         email: "REDACTED"
     });
 
-    const response = await hubspot.post(
-        "/crm/v3/objects/contacts",
-        { properties }
-    );
+    const response = await hubspotRequestWithRetry({
+        method: "POST",
+        url: "/crm/v3/objects/contacts",
+        data: { properties }
+    });
 
     log("✅ HUBSPOT CONTACT CREATED", {
         contactId: response.data.id
@@ -656,6 +671,7 @@ async function createContact(properties) {
 
 // =====================================================
 // HUBSPOT UPDATE CONTACT
+// Existing contacts: update ONLY date_whatsapp and wa_creative.
 // =====================================================
 
 async function updateContact(contactId, properties) {
@@ -666,10 +682,11 @@ async function updateContact(contactId, properties) {
         properties
     });
 
-    const response = await hubspot.patch(
-        `/crm/v3/objects/contacts/${contactId}`,
-        { properties }
-    );
+    const response = await hubspotRequestWithRetry({
+        method: "PATCH",
+        url: `/crm/v3/objects/contacts/${contactId}`,
+        data: { properties }
+    });
 
     log("✅ EXISTING CONTACT UPDATED", {
         contactId: response.data.id
@@ -677,7 +694,336 @@ async function updateContact(contactId, properties) {
 
     return response.data;
 }
+// =====================================================
+// MSG91 TEMPLATE FETCH
+// =====================================================
 
+function extractTemplateList(responseData) {
+    const possible = [
+        responseData?.data?.templates,
+        responseData?.templates,
+        responseData?.data,
+        responseData?.results
+    ];
+
+    for (const item of possible) {
+        if (Array.isArray(item)) return item;
+    }
+
+    if (responseData?.data?.components || responseData?.components) {
+        return [
+            responseData.data?.components ? responseData.data : responseData
+        ];
+    }
+
+    return [];
+}
+
+async function fetchMSG91Template(templateName) {
+    log("========== MSG91 TEMPLATE FETCH STARTED ==========");
+
+    if (!MSG91_AUTHKEY) {
+        log("⚠️ MSG91_AUTHKEY missing. Template details unavailable.");
+
+        return {
+            name: templateName,
+            language: "",
+            category: "",
+            status: "",
+            body: "",
+            header: null,
+            footer: "",
+            buttons: [],
+            fetchStatus: "AUTHKEY_MISSING"
+        };
+    }
+
+    try {
+        log("MSG91 template fetch request", {
+            templateName,
+            integratedNumber: TARGET_NUMBER,
+            endpoint: MSG91_TEMPLATE_URL,
+            method: "GET"
+        });
+
+        const response = await msg91.get(MSG91_TEMPLATE_URL, {
+            params: {
+                plugin: "clevertap",
+                number: TARGET_NUMBER
+            }
+        });
+
+        log("MSG91 template API response status", response.status);
+
+        const templates = extractTemplateList(response.data);
+
+        log("Templates returned by MSG91", {
+            count: templates.length
+        });
+
+        const targetName = String(templateName || "")
+            .trim()
+            .toLowerCase();
+
+        const matched = templates.find(item => {
+            const currentName =
+                item?.name ||
+                item?.template_name ||
+                item?.templateName;
+
+            return String(currentName || "")
+                .trim()
+                .toLowerCase() === targetName;
+        });
+
+        if (!matched) {
+            log("⚠️ Matching template not found in MSG91 response", {
+                requestedTemplate: templateName,
+                availableTemplates: templates.map(item =>
+                    item?.name ||
+                    item?.template_name ||
+                    item?.templateName ||
+                    ""
+                )
+            });
+
+            return {
+                name: templateName,
+                language: "",
+                category: "",
+                status: "",
+                body: "",
+                header: null,
+                footer: "",
+                buttons: [],
+                fetchStatus: "NOT_FOUND"
+            };
+        }
+
+        const components = Array.isArray(matched.components)
+            ? matched.components
+            : [];
+
+        const bodyComponent = components.find(
+            item => item?.type === "BODY"
+        );
+
+        const headerComponent = components.find(
+            item => item?.type === "HEADER"
+        );
+
+        const footerComponent = components.find(
+            item => item?.type === "FOOTER"
+        );
+
+        const buttonComponent = components.find(
+            item => item?.type === "BUTTONS"
+        );
+
+        const details = {
+            name: matched.name || matched.template_name || templateName,
+            language: matched.language || matched.language_code || "",
+            category: matched.category || "",
+            status: matched.status || "",
+            body: bodyComponent?.text || "",
+            header: headerComponent || null,
+            footer: footerComponent?.text || "",
+            buttons: buttonComponent?.buttons || [],
+            fetchStatus: "FOUND"
+        };
+
+        log("✅ MSG91 TEMPLATE MATCHED", {
+            name: details.name,
+            language: details.language,
+            category: details.category,
+            status: details.status,
+            body: details.body,
+            header: details.header,
+            footer: details.footer,
+            buttons: details.buttons
+        });
+
+        return details;
+
+    } catch (error) {
+        logError("MSG91 TEMPLATE FETCH FAILED", error);
+
+        return {
+            name: templateName,
+            language: "",
+            category: "",
+            status: "",
+            body: "",
+            header: null,
+            footer: "",
+            buttons: [],
+            fetchStatus: "FETCH_FAILED"
+        };
+    }
+}
+
+// =====================================================
+// HUBSPOT API RETRY FOR RATE LIMIT (429)
+// =====================================================
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function hubspotRequestWithRetry(requestConfig, maxRetries = 4) {
+    let attempt = 0;
+
+    while (true) {
+        try {
+            return await hubspot.request(requestConfig);
+
+        } catch (error) {
+            const status = error.response?.status;
+
+            if (status !== 429 || attempt >= maxRetries) {
+                throw error;
+            }
+
+            const retryAfterHeader = Number(
+                error.response?.headers?.["retry-after"] || 0
+            );
+
+            const waitMs = retryAfterHeader > 0
+                ? retryAfterHeader * 1000
+                : Math.min(1000 * (2 ** attempt), 10000);
+
+            log("⏳ HubSpot rate limit reached. Retrying.", {
+                attempt: attempt + 1,
+                maxRetries,
+                waitMs
+            });
+
+            await sleep(waitMs);
+            attempt++;
+        }
+    }
+}
+
+// =====================================================
+// HUBSPOT CONTACT SEARCH
+// ONLY "phone" PROPERTY
+// Four formats checked in ONE API request.
+// mobilephone is NOT searched.
+// =====================================================
+
+async function findContact(phone) {
+    const variants = generatePhoneVariants(phone);
+
+    log("========== HUBSPOT CONTACT SEARCH ==========", {
+        phone: maskPhone(phone),
+        property: "phone",
+        variants: variants.map(maskPhone),
+        variantCount: variants.length
+    });
+
+    if (!variants.length) {
+        throw new Error("No valid phone variants");
+    }
+
+    const filterGroups = variants.map(variant => ({
+        filters: [
+            {
+                propertyName: "phone",
+                operator: "EQ",
+                value: variant
+            }
+        ]
+    }));
+
+    log("HubSpot search request prepared", {
+        property: "phone",
+        OR_variant_count: filterGroups.length,
+        mobilephone_search: false
+    });
+
+    const response = await hubspotRequestWithRetry({
+        method: "POST",
+        url: "/crm/v3/objects/contacts/search",
+        data: {
+            filterGroups,
+            properties: [
+                "firstname",
+                "lastname",
+                "phone",
+                "email",
+                "date_whatsapp",
+                "wa_creative"
+            ],
+            limit: 100
+        }
+    });
+
+    const results = response.data?.results || [];
+
+    log("HubSpot contact search result", {
+        resultCount: results.length,
+        contactIds: results.map(contact => contact.id)
+    });
+
+    if (results.length > 1) {
+        log(
+            "⚠️ Multiple matching contacts found. Using first result; no merge performed."
+        );
+    }
+
+    return results[0] || null;
+}
+
+// =====================================================
+// HUBSPOT CREATE CONTACT
+// =====================================================
+
+async function createContact(properties) {
+    log("========== CREATING NEW HUBSPOT CONTACT ==========");
+
+    log("New contact properties", {
+        ...properties,
+        email: "REDACTED"
+    });
+
+    const response = await hubspotRequestWithRetry({
+        method: "POST",
+        url: "/crm/v3/objects/contacts",
+        data: { properties }
+    });
+
+    log("✅ HUBSPOT CONTACT CREATED", {
+        contactId: response.data.id
+    });
+
+    return response.data;
+}
+
+// =====================================================
+// HUBSPOT UPDATE CONTACT
+// Existing contacts: update ONLY date_whatsapp and wa_creative.
+// =====================================================
+
+async function updateContact(contactId, properties) {
+    log("========== UPDATING EXISTING HUBSPOT CONTACT ==========");
+
+    log("Update properties", {
+        contactId,
+        properties
+    });
+
+    const response = await hubspotRequestWithRetry({
+        method: "PATCH",
+        url: `/crm/v3/objects/contacts/${contactId}`,
+        data: { properties }
+    });
+
+    log("✅ EXISTING CONTACT UPDATED", {
+        contactId: response.data.id
+    });
+
+    return response.data;
+}
 // =====================================================
 // HUBSPOT TIMELINE NOTE
 // =====================================================
@@ -695,23 +1041,21 @@ function escapeHtml(value) {
 async function createWhatsAppNote(contactId, data) {
     log("========== HUBSPOT TIMELINE NOTE STARTED ==========");
 
+    const template = data.template || {};
+
     log("Note details", {
         contactId,
         phone: maskPhone(data.phone),
         templateName: data.templateName,
-        messageLength: data.message.length,
-        templateFetchStatus: data.template?.fetchStatus
+        messageLength: (data.message || "").length,
+        templateFetchStatus: template.fetchStatus
     });
-
-    const template = data.template || {};
 
     const buttonHtml = (template.buttons || [])
         .map(button => `
             <li>
                 ${escapeHtml(button.text || button.title || "")}
-                ${button.url
-                    ? ` - ${escapeHtml(button.url)}`
-                    : ""}
+                ${button.url ? ` - ${escapeHtml(button.url)}` : ""}
             </li>
         `)
         .join("");
@@ -726,91 +1070,70 @@ async function createWhatsAppNote(contactId, data) {
 
     const noteBody = `
         <h3>WhatsApp Conversation</h3>
-
         <p><b>Customer:</b> ${escapeHtml(data.name)}</p>
         <p><b>Phone:</b> ${escapeHtml(data.phone)}</p>
         <p><b>Direction:</b> Incoming</p>
         <p><b>Message:</b> ${escapeHtml(data.message)}</p>
-
         <hr>
-
         <h3>MSG91 Template Details</h3>
-
         <p><b>Template Name:</b> ${escapeHtml(data.templateName)}</p>
         <p><b>Language:</b> ${escapeHtml(template.language)}</p>
         <p><b>Category:</b> ${escapeHtml(template.category)}</p>
         <p><b>Status:</b> ${escapeHtml(template.status)}</p>
         <p><b>Fetch Status:</b> ${escapeHtml(template.fetchStatus)}</p>
-
         <p><b>Template Header:</b> ${escapeHtml(headerText)}</p>
-
         <p><b>Template Body:</b></p>
         <p>${escapeHtml(template.body || "Not available")}</p>
-
-        <p><b>Template Footer:</b>
-        ${escapeHtml(template.footer || "Not available")}</p>
-
+        <p><b>Template Footer:</b> ${escapeHtml(template.footer || "Not available")}</p>
         ${buttonHtml
             ? `<p><b>Template Buttons:</b></p><ul>${buttonHtml}</ul>`
             : "<p>No template buttons</p>"}
-
         <hr>
-
-        <p><b>MSG91 Message ID:</b>
-        ${escapeHtml(data.messageId || "N/A")}</p>
-
-        <p><b>Received At:</b>
-        ${new Date().toISOString()}</p>
-
+        <p><b>MSG91 Message ID:</b> ${escapeHtml(data.messageId || "N/A")}</p>
+        <p><b>Received At:</b> ${new Date().toISOString()}</p>
         <p><b>Source:</b> MSG91 WhatsApp</p>
     `;
 
-    try {
-        const response = await hubspot.post(
-            "/crm/v3/objects/notes",
-            {
-                properties: {
-                    hs_timestamp: String(Date.now()),
-                    hs_note_body: noteBody
-                },
-                associations: [
-                    {
-                        to: {
-                            id: String(contactId)
-                        },
-                        types: [
-                            {
-                                associationCategory: "HUBSPOT_DEFINED",
-                                associationTypeId: 202
-                            }
-                        ]
-                    }
-                ]
-            }
-        );
+    const response = await hubspotRequestWithRetry({
+        method: "POST",
+        url: "/crm/v3/objects/notes",
+        data: {
+            properties: {
+                hs_timestamp: String(Date.now()),
+                hs_note_body: noteBody
+            },
+            associations: [
+                {
+                    to: { id: String(contactId) },
+                    types: [
+                        {
+                            associationCategory: "HUBSPOT_DEFINED",
+                            associationTypeId: 202
+                        }
+                    ]
+                }
+            ]
+        }
+    });
 
-        log("✅ HUBSPOT TIMELINE NOTE CREATED", {
-            noteId: response.data.id,
-            contactId
-        });
+    log("✅ HUBSPOT TIMELINE NOTE CREATED", {
+        noteId: response.data.id,
+        contactId
+    });
 
-        return response.data;
-
-    } catch (error) {
-        logError("HUBSPOT TIMELINE NOTE FAILED", error);
-        throw error;
-    }
+    return response.data;
 }
 
 // =====================================================
 // PHONE LOCK
+// Prevents simultaneous processing for same phone
+// within this Node.js process.
 // =====================================================
 
 const phoneLocks = new Map();
 
 async function withPhoneLock(phone, callback) {
     const key = String(phone).replace(/\D/g, "");
-
     const previous = phoneLocks.get(key) || Promise.resolve();
 
     let release;
@@ -827,6 +1150,7 @@ async function withPhoneLock(phone, callback) {
 
     try {
         return await callback();
+
     } finally {
         release();
 
@@ -843,9 +1167,7 @@ async function withPhoneLock(phone, callback) {
 // =====================================================
 
 app.get("/", (req, res) => {
-    res.status(200).send(
-        "MSG91 → HubSpot Webhook Running"
-    );
+    res.status(200).send("MSG91 → HubSpot Webhook Running");
 });
 
 app.get("/health", (req, res) => {
@@ -854,7 +1176,6 @@ app.get("/health", (req, res) => {
         time: new Date().toISOString()
     });
 });
-
 // =====================================================
 // MAIN MSG91 WEBHOOK
 // =====================================================
@@ -868,10 +1189,6 @@ app.post("/webhook/msg91", async (req, res) => {
         const rawData = req.body || {};
 
         log("RAW MSG91 WEBHOOK", rawData);
-
-        // ---------------------------------------------
-        // PARSE DATA
-        // ---------------------------------------------
 
         const data = parseWebhook(rawData);
 
@@ -887,10 +1204,7 @@ app.post("/webhook/msg91", async (req, res) => {
             buttonValues: data.buttonValues
         });
 
-        // ---------------------------------------------
         // FILTER 1: INTEGRATED NUMBER
-        // ---------------------------------------------
-
         const incomingIntegratedNumber =
             data.integratedNumber.replace(/\D/g, "");
 
@@ -902,20 +1216,14 @@ app.post("/webhook/msg91", async (req, res) => {
             );
         }
 
-        // ---------------------------------------------
         // FILTER 2: STOP
-        // ---------------------------------------------
-
         if (isStopMessage(data)) {
             return res.status(200).send(
                 "Ignored - STOP Response"
             );
         }
 
-        // ---------------------------------------------
-        // FILTER 3: OUTGOING MESSAGE
-        // ---------------------------------------------
-
+        // FILTER 3: OUTGOING / AUTO REPLY
         const outgoingDirections = [
             "outgoing",
             "outbound",
@@ -931,10 +1239,7 @@ app.post("/webhook/msg91", async (req, res) => {
             );
         }
 
-        // ---------------------------------------------
         // FILTER 4: TEMPLATE NAME
-        // ---------------------------------------------
-
         if (!data.templateName) {
             log("⛔ IGNORED: TEMPLATE NAME MISSING");
 
@@ -943,10 +1248,7 @@ app.post("/webhook/msg91", async (req, res) => {
             );
         }
 
-        // ---------------------------------------------
         // FILTER 5: CUSTOMER PHONE
-        // ---------------------------------------------
-
         if (!data.phone) {
             log("⛔ IGNORED: CUSTOMER PHONE MISSING");
 
@@ -955,10 +1257,7 @@ app.post("/webhook/msg91", async (req, res) => {
             );
         }
 
-        // ---------------------------------------------
         // FILTER 6: MESSAGE
-        // ---------------------------------------------
-
         if (!data.message) {
             log("⛔ IGNORED: MESSAGE TEXT MISSING");
 
@@ -967,55 +1266,43 @@ app.post("/webhook/msg91", async (req, res) => {
             );
         }
 
-        // ---------------------------------------------
-        // PROCESS SAME PHONE SEQUENTIALLY
-        // ---------------------------------------------
-
+        // PROCESS SAME PHONE ONE AT A TIME
         const result = await withPhoneLock(
             data.phone,
             async () => {
 
-                // -------------------------------------
-                // CURRENT INDIA DATE
-                // -------------------------------------
-
                 const currentDateIndia = getCurrentDateIndia();
+                const templateLower = data.templateName.toLowerCase();
 
-                // -------------------------------------
                 // PROFESSION CATEGORY
-                // -------------------------------------
-
-                const templateLower =
-                    data.templateName.toLowerCase();
-
                 let professionCategory;
 
                 if (templateLower.includes("pharm")) {
                     professionCategory = "Pharmacy";
+
                 } else if (templateLower.includes("diag")) {
                     professionCategory = "Healthcare Professional";
+
                 } else {
                     professionCategory = "Doctor";
                 }
 
-                // -------------------------------------
                 // OFFLINE SOURCE
-                // -------------------------------------
-
-                const offlineSource =
-                    templateLower.startsWith("purch")
-                        ? "Purchased Data"
-                        : "Data Mining";
+                const offlineSource = templateLower.startsWith("purch")
+                    ? "Purchased Data"
+                    : "Data Mining";
 
                 log("PROFESSION AND SOURCE IDENTIFIED", {
                     professionCategory,
                     offlineSource
                 });
 
-                // -------------------------------------
-                // NEW CONTACT PROPERTIES
-                // -------------------------------------
+                // FETCH MSG91 TEMPLATE DETAILS
+                const templateDetails = await fetchMSG91Template(
+                    data.templateName
+                );
 
+                // NEW CONTACT PROPERTIES
                 const properties = {
                     firstname: data.name,
                     phone: data.phone,
@@ -1031,21 +1318,19 @@ app.post("/webhook/msg91", async (req, res) => {
                     email: "REDACTED"
                 });
 
-                // -------------------------------------
-                // SEARCH CONTACT
-                // -------------------------------------
-
-                const existingContact =
-                    await findContact(data.phone);
+                // SEARCH ONLY PHONE PROPERTY.
+                // FOUR VARIANTS IN ONE API REQUEST.
+                //
+                // IMPORTANT:
+                // If search fails, do not create a new contact.
+                const existingContact = await findContact(data.phone);
 
                 let contactId;
                 let contactAction;
 
-                // -------------------------------------
-                // EXISTING CONTACT
-                // -------------------------------------
-
                 if (existingContact) {
+
+                    // EXISTING CONTACT
                     contactId = existingContact.id;
                     contactAction = "UPDATED";
 
@@ -1053,10 +1338,7 @@ app.post("/webhook/msg91", async (req, res) => {
                         contactId
                     });
 
-                    log(
-                        "Updating only date_whatsapp and wa_creative"
-                    );
-
+                    // Update ONLY these two properties.
                     const updated = await updateContact(
                         contactId,
                         {
@@ -1070,17 +1352,13 @@ app.post("/webhook/msg91", async (req, res) => {
                             "Existing contact update failed"
                         );
                     }
-                }
 
-                // -------------------------------------
-                // NEW CONTACT
-                // -------------------------------------
+                } else {
 
-                else {
+                    // NEW CONTACT
                     log("CONTACT NOT FOUND - CREATING NEW CONTACT");
 
-                    const created =
-                        await createContact(properties);
+                    const created = await createContact(properties);
 
                     if (!created?.id) {
                         throw new Error(
@@ -1092,25 +1370,7 @@ app.post("/webhook/msg91", async (req, res) => {
                     contactAction = "CREATED";
                 }
 
-                // -------------------------------------
-                // FETCH MSG91 TEMPLATE DETAILS
-                // -------------------------------------
-
-                const templateDetails =
-                    await fetchMSG91Template(data.templateName);
-
-                // -------------------------------------
-                // CREATE NOTE FOR BOTH CONTACT TYPES
-                // -------------------------------------
-
-                log(
-                    "Creating WhatsApp Timeline Note for contact",
-                    {
-                        contactId,
-                        contactAction
-                    }
-                );
-
+                // CREATE TIMELINE NOTE FOR BOTH CONTACT TYPES
                 const note = await createWhatsAppNote(
                     contactId,
                     {
@@ -1134,10 +1394,6 @@ app.post("/webhook/msg91", async (req, res) => {
             }
         );
 
-        // ---------------------------------------------
-        // SUCCESS
-        // ---------------------------------------------
-
         log("========== WEBHOOK SUCCESS ==========", {
             ...result,
             durationMs: Date.now() - startTime
@@ -1157,7 +1413,6 @@ app.post("/webhook/msg91", async (req, res) => {
         });
     }
 });
-
 // =====================================================
 // SERVER START
 // =====================================================
@@ -1172,8 +1427,22 @@ app.listen(PORT, () => {
         targetNumber: TARGET_NUMBER,
         hubspotTokenConfigured: Boolean(HUBSPOT_TOKEN),
         msg91AuthkeyConfigured: Boolean(MSG91_AUTHKEY),
-        templateURLConfigured: Boolean(MSG91_TEMPLATE_URL),
-        templateMethod: MSG91_TEMPLATE_METHOD,
+        templateURL: MSG91_TEMPLATE_URL,
+        templateMethod: "GET",
+        hubspotSearchProperty: "phone only",
+        phoneVariants: 4,
         webhook: "/webhook/msg91"
     });
+
+    if (!HUBSPOT_TOKEN) {
+        console.error(
+            "❌ HUBSPOT_TOKEN is missing in Environment Variables."
+        );
+    }
+
+    if (!MSG91_AUTHKEY) {
+        console.error(
+            "❌ MSG91_AUTHKEY is missing in Environment Variables."
+        );
+    }
 });
